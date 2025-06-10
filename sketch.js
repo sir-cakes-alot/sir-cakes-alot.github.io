@@ -3,7 +3,7 @@ let accel = 0.2;
 let maxSpeed = 8;
 
 function setup() {
-  createCanvas(1000, 400);
+  createCanvas(1000, 600);
   pos = createVector(width / 2, height / 2);
   vel = createVector(0, 0);
   targetVel = createVector(0, 0);

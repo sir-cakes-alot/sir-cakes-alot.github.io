@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Go Fish P2P</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script defer src="https://cdn.jsdelivr.net/npm/peerjs/dist/peerjs.min.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <h1>Go Fish P2P</h1>
+        <p class="subtle">GitHub Pages friendly, browser-to-browser, host-authoritative.</p>
+      </div>
+      <div class="pill-row">
+        <span class="pill">WebRTC</span>
+        <span class="pill">PeerJS</span>
+        <span class="pill">Static frontend</span>
+      </div>
+    </header>
+
+    <section class="card setup" id="setupPanel">
+      <div class="row">
+        <label>
+          Username
+          <input id="usernameInput" maxlength="20" placeholder="Blake" />
+        </label>
+
+        <label>
+          Room code
+          <input id="roomInput" maxlength="12" placeholder="ABC123" />
+        </label>
+      </div>
+
+      <div class="row buttons">
+        <button id="createBtn">Create room</button>
+        <button id="joinBtn">Join room</button>
+      </div>
+
+      <p class="hint">
+        The host creates a room and shares the code. Everyone else joins with that code.
+      </p>
+
+      <div class="status-grid">
+        <div><span class="label">Connection</span><div id="connStatus">Idle</div></div>
+        <div><span class="label">Your peer ID</span><div id="peerIdOut">—</div></div>
+        <div><span class="label">Room</span><div id="roomOut">—</div></div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <section class="card">
+        <div class="section-head">
+          <h2>Lobby</h2>
+          <button id="startBtn" class="secondary hidden">Start game</button>
+        </div>
+        <div id="lobbyList" class="list"></div>
+      </section>
+
+      <section class="card">
+        <div class="section-head">
+          <h2>Game</h2>
+          <div id="turnBadge" class="badge">Waiting</div>
+        </div>
+
+        <div class="game-meta">
+          <div><span class="label">Turn</span><div id="turnOut">—</div></div>
+          <div><span class="label">Deck</span><div id="deckOut">—</div></div>
+          <div><span class="label">Books</span><div id="booksOut">—</div></div>
+        </div>
+
+        <div id="askPanel" class="ask-panel hidden">
+          <label>
+            Ask player
+            <select id="targetSelect"></select>
+          </label>
+
+          <label>
+            Rank
+            <select id="rankSelect"></select>
+          </label>
+
+          <button id="askBtn">Ask</button>
+        </div>
+
+        <div class="hand-wrap">
+          <div class="section-head compact">
+            <h3>Your hand</h3>
+            <span id="handHint" class="subtle">Join a room to see your cards.</span>
+          </div>
+          <div id="hand" class="hand"></div>
+        </div>
+      </section>
+    </section>
+
+    <section class="card">
+      <div class="section-head">
+        <h2>Log</h2>
+        <button id="copyRoomBtn" class="secondary">Copy room code</button>
+      </div>
+      <div id="log" class="log" aria-live="polite"></div>
+    </section>
+  </main>
+</body>
+</html>

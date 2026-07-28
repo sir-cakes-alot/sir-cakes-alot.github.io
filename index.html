@@ -1,11 +1,858 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <title>p5.js Sketch</title>
-    <script src="https://cdn.jsdelivr.net/npm/p5@1.9.0/lib/p5.min.js"></script>
-  </head>
-  <body>
-    <script src="sketch.js"></script>
-  </body>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="A polished peer-to-peer Go Fish game that runs in the browser with no game server required.">
+<title>Go Fish — P2P</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"></script>
+<style>
+  :root {
+    --felt-1: #0b4a3f;
+    --felt-2: #0e5c4d;
+    --gold: #d4af6a;
+    --cream: #f2ead9;
+    --ink: #14201c;
+    --red: #b43b3b;
+    --panel: rgba(10, 30, 25, 0.55);
+    --line: rgba(212, 175, 106, 0.35);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background:
+      radial-gradient(ellipse at top, var(--felt-2), var(--felt-1) 70%);
+    color: var(--cream);
+    font-family: 'Georgia', 'Iowan Old Style', serif;
+  }
+  body {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .hidden { display: none !important; }
+  h1, h2, h3 { font-family: 'Palatino Linotype', Georgia, serif; font-weight: normal; letter-spacing: 0.04em; }
+  .brand {
+    text-align: center;
+    margin-bottom: 18px;
+  }
+  .brand .fish { font-size: 2.6rem; display: block; margin-bottom: -6px; }
+  .brand h1 {
+    font-size: 1.9rem; color: var(--gold); margin: 0;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.4);
+  }
+  .brand .sub { font-size: 0.8rem; opacity: 0.65; letter-spacing: 0.15em; text-transform: uppercase; }
+
+  .card-panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 28px 30px;
+    max-width: 440px;
+    width: 100%;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.35);
+    backdrop-filter: blur(6px);
+  }
+  .wide { max-width: 720px; }
+
+  button {
+    font-family: inherit;
+    cursor: pointer;
+    border: none;
+    border-radius: 8px;
+    padding: 11px 18px;
+    font-size: 0.95rem;
+    background: var(--gold);
+    color: #1a1208;
+    font-weight: bold;
+    letter-spacing: 0.02em;
+    transition: transform 0.12s ease, box-shadow 0.12s ease;
+  }
+  button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 4px 14px rgba(212,175,106,0.35); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.secondary {
+    background: transparent;
+    color: var(--gold);
+    border: 1px solid var(--gold);
+  }
+  .btn-row { display: flex; gap: 12px; margin-top: 18px; }
+  .btn-row button { flex: 1; }
+
+  input, select {
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 7px;
+    border: 1px solid var(--line);
+    background: rgba(0,0,0,0.25);
+    color: var(--cream);
+    font-family: inherit;
+    font-size: 0.95rem;
+    margin-top: 6px;
+  }
+  label { font-size: 0.78rem; opacity: 0.75; text-transform: uppercase; letter-spacing: 0.08em; }
+  .field { margin-bottom: 16px; }
+
+  .room-code {
+    font-size: 1.6rem;
+    letter-spacing: 0.12em;
+    text-align: center;
+    color: var(--gold);
+    background: rgba(0,0,0,0.3);
+    border: 1px dashed var(--line);
+    border-radius: 8px;
+    padding: 10px;
+    margin: 10px 0 16px;
+    user-select: all;
+  }
+  .hint { font-size: 0.78rem; opacity: 0.6; text-align: center; margin-top: -8px; margin-bottom: 14px;}
+
+  .player-list { list-style: none; padding: 0; margin: 10px 0; }
+  .player-list li {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 12px; border-radius: 7px; background: rgba(0,0,0,0.2);
+    margin-bottom: 6px; font-size: 0.9rem;
+  }
+  .player-list .tag { font-size: 0.68rem; color: var(--gold); border: 1px solid var(--gold); border-radius: 10px; padding: 1px 8px; }
+
+  /* GAME SCREEN */
+  #screen-game { max-width: 900px; }
+  .scoreboard { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+  .score-chip {
+    background: rgba(0,0,0,0.25);
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    padding: 8px 12px;
+    font-size: 0.82rem;
+    min-width: 110px;
+  }
+  .score-chip.turn { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold) inset; }
+  .score-chip .name { color: var(--gold); font-weight: bold; }
+  .score-chip .stat { opacity: 0.75; font-size: 0.75rem; }
+
+  .turn-banner {
+    text-align: center;
+    padding: 10px;
+    border-radius: 8px;
+    background: rgba(212,175,106,0.12);
+    border: 1px solid var(--line);
+    margin-bottom: 18px;
+    font-size: 1rem;
+  }
+  .turn-banner.mine { background: rgba(212,175,106,0.28); color: var(--gold); font-weight: bold; }
+
+  .hand {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 12px 0 20px;
+    min-height: 90px;
+  }
+  .playing-card {
+    width: 56px; height: 78px;
+    background: var(--cream);
+    border-radius: 7px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    color: var(--ink); font-weight: bold; font-size: 1.05rem;
+    box-shadow: 0 3px 6px rgba(0,0,0,0.4);
+    border: 1px solid rgba(0,0,0,0.15);
+  }
+  .playing-card.red { color: var(--red); }
+  .playing-card .suit { font-size: 1.3rem; margin-top: -2px; }
+  .books-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .book-chip {
+    background: rgba(212,175,106,0.18);
+    border: 1px solid var(--gold);
+    color: var(--gold);
+    border-radius: 6px;
+    padding: 3px 9px;
+    font-size: 0.8rem;
+  }
+
+  .ask-panel {
+    background: rgba(0,0,0,0.22);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 18px;
+  }
+  .ask-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+  .ask-row .field { flex: 1; min-width: 140px; margin-bottom: 0; }
+  .ask-row button { flex-shrink: 0; }
+
+  .log {
+    background: rgba(0,0,0,0.3);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px 14px;
+    max-height: 160px;
+    overflow-y: auto;
+    font-size: 0.83rem;
+    line-height: 1.6;
+  }
+  .log .entry.me { color: var(--gold); }
+  .log .entry.system { opacity: 0.6; font-style: italic; }
+
+  .deck-info { text-align: center; font-size: 0.85rem; opacity: 0.7; margin-bottom: 14px; }
+
+  .error-msg { color: #ff9b9b; font-size: 0.85rem; margin-top: 8px; min-height: 1.2em; }
+
+  .topline {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+  }
+  .small-note {
+    font-size: 0.8rem;
+    opacity: 0.7;
+    line-height: 1.4;
+  }
+  .copy-btn {
+    padding: 8px 12px;
+    font-size: 0.82rem;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--cream);
+    border: 1px solid var(--line);
+  }
+  .copy-btn:hover:not(:disabled) {
+    box-shadow: none;
+    transform: translateY(-1px);
+  }
+
+  #screen-over .result-title { font-size: 1.4rem; color: var(--gold); text-align: center; margin-bottom: 10px; }
+  #screen-over .final-scores { list-style: none; padding: 0; }
+  #screen-over .final-scores li {
+    display: flex; justify-content: space-between; padding: 8px 12px;
+    background: rgba(0,0,0,0.22); border-radius: 7px; margin-bottom: 6px;
+  }
+  #screen-over .final-scores li.winner { border: 1px solid var(--gold); color: var(--gold); font-weight: bold; }
+</style>
+</head>
+<body>
+
+<!-- MENU -->
+<div id="screen-menu" class="card-panel">
+  <div class="brand"><span class="fish">🎣</span><h1>Go Fish</h1><div class="sub">peer to peer · no server required</div></div>
+  <div class="btn-row">
+    <button id="btn-goto-host">Host a Game</button>
+    <button id="btn-goto-join" class="secondary">Join a Game</button>
+  </div>
+</div>
+
+<!-- HOST SETUP -->
+<div id="screen-host-setup" class="card-panel hidden">
+  <div class="brand"><span class="fish">🎣</span><h1>Host a Game</h1></div>
+  <div class="field">
+    <label for="host-name">Your name</label>
+    <input id="host-name" maxlength="16" placeholder="e.g. Blake">
+  </div>
+  <button id="btn-create-room" style="width:100%">Create Room</button>
+  <div class="error-msg" id="host-setup-error"></div>
+  <div class="btn-row"><button class="secondary" id="btn-back-1">Back</button></div>
+</div>
+
+<!-- HOST LOBBY -->
+<div id="screen-host-lobby" class="card-panel hidden">
+  <div class="brand"><span class="fish">🎣</span><h1>Room Open</h1></div>
+  <div class="topline">
+    <label>Share this code with friends</label>
+    <button id="btn-copy-code" class="copy-btn" type="button">Copy code</button>
+  </div>
+  <div class="room-code" id="room-code-display">------</div>
+  <div class="hint">They click "Join a Game" and enter this code.</div>
+  <div class="small-note">This uses PeerJS, so the page should be hosted over HTTPS and allow loading the PeerJS library from a CDN.</div>
+  <label>Players (<span id="lobby-count">1</span>/6)</label>
+  <ul class="player-list" id="lobby-player-list"></ul>
+  <button id="btn-start-game" style="width:100%" disabled>Need at least 2 players</button>
+  <div class="error-msg" id="lobby-error"></div>
+</div>
+
+<!-- JOIN SETUP -->
+<div id="screen-join-setup" class="card-panel hidden">
+  <div class="brand"><span class="fish">🎣</span><h1>Join a Game</h1></div>
+  <div class="field">
+    <label for="join-name">Your name</label>
+    <input id="join-name" maxlength="16" placeholder="e.g. Sam">
+  </div>
+  <div class="field">
+    <label for="join-code">Room code</label>
+    <input id="join-code" placeholder="paste code here">
+  </div>
+  <button id="btn-connect-room" style="width:100%">Connect</button>
+  <div class="error-msg" id="join-setup-error"></div>
+  <div class="btn-row"><button class="secondary" id="btn-back-2">Back</button></div>
+</div>
+
+<!-- JOIN WAITING -->
+<div id="screen-join-lobby" class="card-panel hidden">
+  <div class="brand"><span class="fish">🎣</span><h1>Connected</h1></div>
+  <p style="text-align:center; opacity:0.75;">Waiting for the host to start the game…</p>
+  <label>Players</label>
+  <ul class="player-list" id="join-player-list"></ul>
+</div>
+
+<!-- GAME -->
+<div id="screen-game" class="card-panel wide hidden">
+  <div class="scoreboard" id="scoreboard"></div>
+  <div class="deck-info" id="deck-info">Deck: 0 cards remaining</div>
+  <div class="turn-banner" id="turn-banner">—</div>
+
+  <h3 style="margin-bottom:4px;">Your Hand</h3>
+  <div class="hand" id="my-hand"></div>
+  <div class="books-row" id="my-books"></div>
+
+  <div class="ask-panel" id="ask-panel">
+    <div class="ask-row">
+      <div class="field">
+        <label for="ask-target">Ask player</label>
+        <select id="ask-target"></select>
+      </div>
+      <div class="field">
+        <label for="ask-rank">For rank</label>
+        <select id="ask-rank"></select>
+      </div>
+      <button id="btn-ask">Go Fish!</button>
+    </div>
+  </div>
+
+  <label>Game Log</label>
+  <div class="log" id="game-log"></div>
+</div>
+
+<!-- GAME OVER -->
+<div id="screen-over" class="card-panel hidden">
+  <div class="result-title" id="result-title">Game Over</div>
+  <ul class="final-scores" id="final-scores"></ul>
+  <div class="btn-row"><button id="btn-reload" style="width:100%">Back to Menu</button></div>
+</div>
+
+<script>
+(function() {
+  "use strict";
+
+  // ---------- constants ----------
+  const RANKS = ['A','2','3','4','5','6','7','8','9','10','J','Q','K'];
+  const SUITS = [
+    {sym:'♠', red:false}, {sym:'♥', red:true}, {sym:'♦', red:true}, {sym:'♣', red:false}
+  ];
+  const MAX_PLAYERS = 6;
+
+  // ---------- shared state ----------
+  let isHost = false;
+  let myId = null;          // local player id (peer id, or 'host')
+  let myName = '';
+  let peer = null;          // PeerJS Peer instance
+  let hostConn = null;      // (client only) connection to host
+  let players = [];         // host: [{id, name, conn|null, hand:[], books:[]}]  client: [{id,name,cardCount,books}]
+  let myHand = [];          // client's own hand (also used by host for its own hand)
+  let myBooks = [];
+  let currentTurnId = null;
+  let deckCount = 0;
+  let gameStarted = false;
+
+  // ================= helpers =================
+  function $(id) { return document.getElementById(id); }
+  function show(id) {
+    ['screen-menu','screen-host-setup','screen-host-lobby','screen-join-setup',
+     'screen-join-lobby','screen-game','screen-over'].forEach(s => $(s).classList.add('hidden'));
+    $(id).classList.remove('hidden');
+  }
+  function makeDeck() {
+    const deck = [];
+    for (const s of SUITS) for (const r of RANKS) deck.push({rank:r, suit:s.sym, red:s.red});
+    for (let i = deck.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i+1));
+      [deck[i], deck[j]] = [deck[j], deck[i]];
+    }
+    return deck;
+  }
+  function cardEl(card) {
+    const div = document.createElement('div');
+    div.className = 'playing-card' + (card.red ? ' red' : '');
+    div.innerHTML = `<span>${card.rank}</span><span class="suit">${card.suit}</span>`;
+    return div;
+  }
+  function extractBooks(hand) {
+    // returns {remainingHand, newBooks: [rank,...]}
+    const counts = {};
+    hand.forEach(c => { counts[c.rank] = (counts[c.rank]||0)+1; });
+    const bookRanks = Object.keys(counts).filter(r => counts[r] === 4);
+    const remaining = hand.filter(c => !bookRanks.includes(c.rank));
+    return {remaining, bookRanks};
+  }
+  function logLine(text, cls) {
+    const div = document.createElement('div');
+    div.className = 'entry' + (cls ? ' ' + cls : '');
+    div.textContent = text;
+    const log = $('game-log');
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function currentPlayerIndex() {
+    return players.findIndex(p => p.id === currentTurnId);
+  }
+
+  function getPlayerById(id) {
+    return players.find(p => p.id === id) || null;
+  }
+
+  function advanceTurnFrom(index) {
+    if (players.length === 0) return null;
+    const next = players[nextTurnIndex(index)];
+    currentTurnId = next ? next.id : currentTurnId;
+    return currentTurnId;
+  }
+
+  function ensureTurnReady() {
+    const deck = window.__deck || [];
+    let guard = 0;
+
+    while (guard++ < players.length + 2) {
+      const idx = currentPlayerIndex();
+      const current = idx >= 0 ? players[idx] : null;
+      if (!current) return;
+
+      if (current.disconnected) {
+        advanceTurnFrom(idx);
+        continue;
+      }
+
+      if (current.hand.length > 0) return;
+
+      if (deck.length === 0) {
+        advanceTurnFrom(idx);
+        continue;
+      }
+
+      const drawn = deck.pop();
+      current.hand.push(drawn);
+      checkBooks(current);
+
+      const stillEmpty = current.hand.length === 0;
+      const msg = `${current.name} had no cards and drew a card.` + (stillEmpty ? ' Turn passes.' : '');
+      broadcastState(msg);
+
+      if (stillEmpty) {
+        advanceTurnFrom(idx);
+        continue;
+      }
+      return;
+    }
+  }
+
+  // ================= MENU NAV =================
+  $('btn-goto-host').onclick = () => show('screen-host-setup');
+  $('btn-goto-join').onclick = () => show('screen-join-setup');
+  $('btn-back-1').onclick = () => { location.reload(); };
+  $('btn-back-2').onclick = () => { location.reload(); };
+  $('btn-reload').onclick = () => location.reload();
+  $('btn-copy-code').onclick = async () => {
+    const code = $('room-code-display').textContent.trim();
+    try {
+      await navigator.clipboard.writeText(code);
+      $('btn-copy-code').textContent = 'Copied';
+      setTimeout(() => $('btn-copy-code').textContent = 'Copy code', 1200);
+    } catch (err) {
+      $('lobby-error').textContent = 'Could not copy code automatically. Select it and copy manually.';
+    }
+  };
+
+  // ================= HOST FLOW =================
+  $('btn-create-room').onclick = () => {
+    const name = $('host-name').value.trim();
+    if (!name) { $('host-setup-error').textContent = 'Enter your name first.'; return; }
+    myName = name;
+    isHost = true;
+    myId = 'host';
+    players = [{id:'host', name, conn:null, hand:[], books:[]}];
+
+    $('btn-create-room').disabled = true;
+    $('btn-create-room').textContent = 'Connecting…';
+
+    peer = new Peer();
+    peer.on('open', id => {
+      show('screen-host-lobby');
+      $('room-code-display').textContent = id;
+      renderLobby();
+    });
+    peer.on('connection', conn => {
+      conn.on('open', () => {
+        conn.on('data', data => handleHostMessage(conn, data));
+        conn.on('close', () => handleDisconnect(conn));
+      });
+    });
+    peer.on('error', err => {
+      $('host-setup-error').textContent = 'Connection error: ' + err.type + '. Try reloading.';
+    });
+  };
+
+  function renderLobby() {
+    $('lobby-count').textContent = players.length;
+    const ul = $('lobby-player-list');
+    ul.innerHTML = '';
+    players.forEach((p, i) => {
+      const li = document.createElement('li');
+      li.innerHTML = `<span>${p.name}</span>` + (i === 0 ? '<span class="tag">HOST</span>' : '');
+      ul.appendChild(li);
+    });
+    $('btn-start-game').disabled = players.length < 2;
+    $('btn-start-game').textContent = players.length < 2 ? 'Need at least 2 players' : 'Start Game';
+  }
+
+  function handleHostMessage(conn, msg) {
+    if (msg.type === 'join') {
+      if (players.length >= MAX_PLAYERS) {
+        conn.send({type:'join_rejected', reason:'Room is full.'});
+        return;
+      }
+      if (gameStarted) {
+        conn.send({type:'join_rejected', reason:'Game already started.'});
+        return;
+      }
+      const id = conn.peer;
+      players.push({id, name: msg.name || 'Player', conn, hand:[], books:[]});
+      conn.send({type:'join_accepted', yourId:id});
+      renderLobby();
+      broadcastLobby();
+    } else if (msg.type === 'ask') {
+      processAsk(msg.askerId, msg.targetId, msg.rank);
+    }
+  }
+
+  function broadcastLobby() {
+    const roster = players.map(p => ({id:p.id, name:p.name}));
+    players.forEach(p => { if (p.conn) p.conn.send({type:'lobby_update', players: roster}); });
+  }
+
+  function handleDisconnect(conn) {
+    const idx = players.findIndex(p => p.conn === conn);
+    if (idx === -1) return;
+    logLine(`${players[idx].name} disconnected.`, 'system');
+    if (!gameStarted) {
+      players.splice(idx, 1);
+      renderLobby();
+      broadcastLobby();
+    } else {
+      // mark as gone but keep seat so indices don't break the turn order
+      players[idx].disconnected = true;
+      broadcastState();
+    }
+  }
+
+  $('btn-start-game').onclick = () => {
+    if (players.length < 2) return;
+    gameStarted = true;
+    startGameAsHost();
+  };
+
+  function startGameAsHost() {
+    const deck = makeDeck();
+    const dealCount = players.length <= 2 ? 7 : 5;
+    players.forEach(p => { p.hand = []; p.books = []; });
+    for (let i = 0; i < dealCount; i++) {
+      players.forEach(p => p.hand.push(deck.pop()));
+    }
+    window.__deck = deck; // stash on host
+    currentTurnId = players[0].id;
+    deckCount = deck.length;
+
+    // send each player their hand + roster
+    players.forEach(p => {
+      const roster = players.map(pl => ({id:pl.id, name:pl.name, cardCount:pl.hand.length, books:pl.books}));
+      if (p.id === 'host') {
+        myHand = p.hand; myBooks = p.books;
+      } else {
+        p.conn.send({type:'game_start', roster, yourHand:p.hand, deckCount:deck.length, turnId:currentTurnId});
+      }
+    });
+    enterGameScreen();
+    renderGameHost();
+  }
+
+  function broadcastState(logMsg) {
+    const deck = window.__deck || [];
+    deckCount = deck.length;
+    const roster = players.map(pl => ({id:pl.id, name:pl.name, cardCount:pl.hand.length, books:pl.books, disconnected:!!pl.disconnected}));
+    players.forEach(p => {
+      if (p.id === 'host') return;
+      if (p.conn) p.conn.send({type:'state_update', roster, deckCount, turnId:currentTurnId, yourHand:p.hand, log:logMsg});
+    });
+    renderGameHost(logMsg);
+  }
+
+  function nextTurnIndex(fromIdx) {
+    const n = players.length;
+    for (let step = 1; step <= n; step++) {
+      const idx = (fromIdx + step) % n;
+      const candidate = players[idx];
+      if (!candidate || candidate.disconnected) continue;
+      if (candidate.hand.length === 0 && (window.__deck || []).length > 0) continue;
+      return idx;
+    }
+    return fromIdx;
+  }
+
+  function processAsk(askerId, targetId, rank) {
+    ensureTurnReady();
+    if (askerId !== currentTurnId) return; // not your turn, ignore
+    const asker = getPlayerById(askerId);
+    const target = getPlayerById(targetId);
+    if (!asker || !target || asker.id === target.id) return;
+    if (asker.hand.length === 0) {
+      ensureTurnReady();
+      return;
+    }
+
+    const matches = target.hand.filter(c => c.rank === rank);
+    let msg;
+    if (matches.length > 0) {
+      target.hand = target.hand.filter(c => c.rank !== rank);
+      asker.hand.push(...matches);
+      msg = `${asker.name} asked ${target.name} for ${rank}s — got ${matches.length}! Goes again.`;
+      checkBooks(asker);
+      ensureTurnReady();
+      broadcastState(msg);
+      // asker goes again — turn unchanged
+    } else {
+      const deck = window.__deck || [];
+      let drew = null;
+      if (deck.length > 0) drew = deck.pop();
+      if (drew) asker.hand.push(drew);
+      const gotMatch = drew && drew.rank === rank;
+      msg = `${asker.name} asked ${target.name} for ${rank}s — Go Fish!` + (drew ? ` Drew a card${gotMatch ? ' — and it matched! Goes again.' : '.'}` : ' (deck empty)');
+      checkBooks(asker);
+      if (!gotMatch) {
+        const idx = players.findIndex(p => p.id === asker.id);
+        advanceTurnFrom(idx);
+      }
+      ensureTurnReady();
+      broadcastState(msg);
+    }
+    checkGameOver();
+  }
+
+  function checkBooks(player) {
+    const {remaining, bookRanks} = extractBooks(player.hand);
+    if (bookRanks.length) {
+      player.hand = remaining;
+      player.books.push(...bookRanks);
+      if (player.id === 'host') { myHand = player.hand; myBooks = player.books; }
+      logLine(`${player.name} completed a book of ${bookRanks.join(', ')}!`, 'system');
+    }
+  }
+
+  function checkGameOver() {
+    const deck = window.__deck || [];
+    const allEmpty = players.every(p => p.hand.length === 0);
+    if (deck.length === 0 && allEmpty) {
+      const results = players.map(p => ({name:p.name, books: p.books.length}));
+      players.forEach(p => { if (p.conn) p.conn.send({type:'game_over', results}); });
+      showGameOver(results);
+    }
+  }
+
+  // ================= CLIENT FLOW =================
+  $('btn-connect-room').onclick = () => {
+    const name = $('join-name').value.trim();
+    const code = $('join-code').value.trim();
+    if (!name || !code) { $('join-setup-error').textContent = 'Enter your name and the room code.'; return; }
+    myName = name;
+    isHost = false;
+    $('btn-connect-room').disabled = true;
+    $('btn-connect-room').textContent = 'Connecting…';
+
+    peer = new Peer();
+    peer.on('open', () => {
+      hostConn = peer.connect(code, {reliable:true});
+      hostConn.on('open', () => {
+        hostConn.send({type:'join', name});
+      });
+      hostConn.on('data', data => handleClientMessage(data));
+      hostConn.on('error', () => {
+        $('join-setup-error').textContent = 'Could not reach that room code.';
+        $('btn-connect-room').disabled = false;
+        $('btn-connect-room').textContent = 'Connect';
+      });
+      hostConn.on('close', () => {
+        if (gameStarted) logLine('Lost connection to host.', 'system');
+      });
+    });
+    peer.on('error', err => {
+      $('join-setup-error').textContent = 'Connection error: ' + err.type;
+      $('btn-connect-room').disabled = false;
+      $('btn-connect-room').textContent = 'Connect';
+    });
+  };
+
+  function handleClientMessage(msg) {
+    if (msg.type === 'join_rejected') {
+      $('join-setup-error').textContent = msg.reason;
+      $('btn-connect-room').disabled = false;
+      $('btn-connect-room').textContent = 'Connect';
+    } else if (msg.type === 'join_accepted') {
+      myId = msg.yourId;
+      show('screen-join-lobby');
+    } else if (msg.type === 'lobby_update') {
+      players = msg.players;
+      const ul = $('join-player-list');
+      ul.innerHTML = '';
+      players.forEach((p, i) => {
+        const li = document.createElement('li');
+        li.innerHTML = `<span>${p.name}</span>` + (i === 0 ? '<span class="tag">HOST</span>' : '');
+        ul.appendChild(li);
+      });
+    } else if (msg.type === 'game_start') {
+      gameStarted = true;
+      players = msg.roster;
+      myHand = msg.yourHand;
+      myBooks = (players.find(p => p.id === myId) || {}).books || [];
+      currentTurnId = msg.turnId;
+      deckCount = msg.deckCount;
+      enterGameScreen();
+      ensureTurnReady();
+      renderGameClient();
+    } else if (msg.type === 'state_update') {
+      players = msg.roster;
+      myHand = msg.yourHand;
+      const me = players.find(p => p.id === myId);
+      myBooks = me ? me.books : myBooks;
+      currentTurnId = msg.turnId;
+      deckCount = msg.deckCount;
+      ensureTurnReady();
+      renderGameClient(msg.log);
+    } else if (msg.type === 'game_over') {
+      showGameOver(msg.results);
+    }
+  }
+
+  // ================= SHARED GAME UI =================
+  function enterGameScreen() {
+    show('screen-game');
+  }
+
+  function renderScoreboard() {
+    const board = $('scoreboard');
+    board.innerHTML = '';
+    players.forEach(p => {
+      const chip = document.createElement('div');
+      chip.className = 'score-chip' + (p.id === currentTurnId ? ' turn' : '');
+      const count = (p.id === myId || (isHost && p.id === 'host')) ? myHand.length : p.cardCount;
+      const books = (p.id === myId || (isHost && p.id === 'host')) ? myBooks.length : (p.books ? p.books.length : 0);
+      chip.innerHTML = `<div class="name">${p.name}${p.disconnected ? ' (gone)' : ''}</div><div class="stat">${count} cards · ${books} books</div>`;
+      board.appendChild(chip);
+    });
+    $('deck-info').textContent = `Deck: ${deckCount} cards remaining`;
+  }
+
+  function renderHandAndAsk() {
+    const handDiv = $('my-hand');
+    handDiv.innerHTML = '';
+    myHand.forEach(c => handDiv.appendChild(cardEl(c)));
+    const booksDiv = $('my-books');
+    booksDiv.innerHTML = '';
+    myBooks.forEach(r => {
+      const chip = document.createElement('span');
+      chip.className = 'book-chip';
+      chip.textContent = r + 's';
+      booksDiv.appendChild(chip);
+    });
+
+    const myTurn = currentTurnId === myId;
+    const banner = $('turn-banner');
+    if (myTurn) {
+      banner.textContent = "Your turn — ask someone for a card!";
+      banner.className = 'turn-banner mine';
+    } else {
+      const turnPlayer = players.find(p => p.id === currentTurnId);
+      banner.textContent = (turnPlayer ? turnPlayer.name : '...') + "'s turn";
+      banner.className = 'turn-banner';
+    }
+
+    const targetSel = $('ask-target');
+    targetSel.innerHTML = '';
+    players
+      .filter(p => p.id !== myId)
+      .filter(p => !p.disconnected)
+      .filter(p => {
+        const cnt = p.cardCount !== undefined ? p.cardCount : (p.hand ? p.hand.length : 0);
+        return cnt > 0;
+      })
+      .forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = p.id;
+        opt.textContent = p.name;
+        targetSel.appendChild(opt);
+      });
+
+    const rankSel = $('ask-rank');
+    rankSel.innerHTML = '';
+    const myRanks = [...new Set(myHand.map(c => c.rank))];
+    myRanks.forEach(r => {
+      const opt = document.createElement('option');
+      opt.value = r; opt.textContent = r;
+      rankSel.appendChild(opt);
+    });
+
+    const canAsk = myTurn && myRanks.length > 0 && targetSel.options.length > 0;
+    $('btn-ask').disabled = !canAsk;
+    if (!myTurn) {
+      $('btn-ask').textContent = 'Not your turn';
+    } else if (myRanks.length === 0) {
+      $('btn-ask').textContent = 'No cards to ask with';
+    } else if (targetSel.options.length === 0) {
+      $('btn-ask').textContent = 'No valid targets';
+    } else {
+      $('btn-ask').textContent = 'Go Fish!';
+    }
+  }
+
+  function renderGameHost(logMsg) {
+    renderScoreboard();
+    renderHandAndAsk();
+    if (logMsg) logLine(logMsg);
+  }
+  function renderGameClient(logMsg) {
+    renderScoreboard();
+    renderHandAndAsk();
+    if (logMsg) logLine(logMsg);
+  }
+
+  $('btn-ask').onclick = () => {
+    const target = $('ask-target').value;
+    const rank = $('ask-rank').value;
+    if (!target || !rank) return;
+    if (isHost) {
+      processAsk('host', target, rank);
+    } else {
+      hostConn.send({type:'ask', askerId: myId, targetId: target, rank});
+    }
+    $('btn-ask').disabled = true;
+  };
+
+  function showGameOver(results) {
+    show('screen-over');
+    const max = Math.max(...results.map(r => r.books));
+    const winners = results.filter(r => r.books === max).map(r => r.name);
+    $('result-title').textContent = winners.length > 1
+      ? `It's a tie: ${winners.join(' & ')}!`
+      : `${winners[0]} wins with ${max} book${max === 1 ? '' : 's'}!`;
+    const ul = $('final-scores');
+    ul.innerHTML = '';
+    results.sort((a,b) => b.books - a.books).forEach(r => {
+      const li = document.createElement('li');
+      if (r.books === max) li.classList.add('winner');
+      li.innerHTML = `<span>${r.name}</span><span>${r.books} book${r.books === 1 ? '' : 's'}</span>`;
+      ul.appendChild(li);
+    });
+  }
+
+})();
+</script>
+</body>
 </html>

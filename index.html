@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="description" content="A polished peer-to-peer Go Fish game that runs in the browser with no game server required.">
-<title>Go Fish — P2P</title>
+<title>Go Fish</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"></script>
 <style>
   :root {
@@ -237,7 +237,7 @@
 
 <!-- MENU -->
 <div id="screen-menu" class="card-panel">
-  <div class="brand"><span class="fish">🎣</span><h1>Go Fish</h1><div class="sub">peer to peer · no server required</div></div>
+  <div class="brand"><span class="fish">🎣</span><h1>Go Fish</h1><div class="sub">play with your friends</div></div>
   <div class="btn-row">
     <button id="btn-goto-host">Host a Game</button>
     <button id="btn-goto-join" class="secondary">Join a Game</button>
@@ -265,7 +265,6 @@
   </div>
   <div class="room-code" id="room-code-display">------</div>
   <div class="hint">They click "Join a Game" and enter this code.</div>
-  <div class="small-note">This uses PeerJS, so the page should be hosted over HTTPS and allow loading the PeerJS library from a CDN.</div>
   <label>Players (<span id="lobby-count">1</span>/6)</label>
   <ul class="player-list" id="lobby-player-list"></ul>
   <button id="btn-start-game" style="width:100%" disabled>Need at least 2 players</button>

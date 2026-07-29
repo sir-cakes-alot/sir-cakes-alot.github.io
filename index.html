@@ -2,251 +2,107 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Go Fish</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Go Fish P2P</title>
   <link rel="stylesheet" href="styles.css" />
-  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/peerjs/dist/peerjs.min.js"></script>
+  <script defer src="app.js"></script>
 </head>
 <body>
-  <div class="app-shell">
-    <div class="ambient ambient-a"></div>
-    <div class="ambient ambient-b"></div>
-
-    <header class="topbar">
+  <main class="shell">
+    <header class="hero">
       <div>
-        <div class="eyebrow">WebRTC • PeerJS • Static hosting</div>
-        <h1>Go Fish</h1>
+        <h1>Go Fish P2P</h1>
+        <p class="subtle">GitHub Pages friendly, browser-to-browser, host-authoritative.</p>
       </div>
-      <div class="topbar-right">
-        <div id="netStatus" class="status-chip">Offline</div>
+      <div class="pill-row">
+        <span class="pill">WebRTC</span>
+        <span class="pill">PeerJS</span>
+        <span class="pill">Static frontend</span>
       </div>
     </header>
 
-    <main class="stage">
-      <section id="screen-splash" class="screen screen-active">
-        <div class="hero-card">
-          <div class="hero-badge">🎣</div>
-          <h2>Go Fish</h2>
-          <p>Direct browser-to-browser multiplayer with join codes and usernames.</p>
-          <button class="primary-btn" id="enterAppBtn">Enter</button>
+    <section class="card setup" id="setupPanel">
+      <div class="row">
+        <label>
+          Username
+          <input id="usernameInput" maxlength="20" placeholder="Blake" />
+        </label>
+
+        <label>
+          Room code
+          <input id="roomInput" maxlength="12" placeholder="ABC123" />
+        </label>
+      </div>
+
+      <div class="row buttons">
+        <button id="createBtn">Create room</button>
+        <button id="joinBtn">Join room</button>
+      </div>
+
+      <p class="hint">
+        The host creates a room and shares the code. Everyone else joins with that code.
+      </p>
+
+      <div class="status-grid">
+        <div><span class="label">Connection</span><div id="connStatus">Idle</div></div>
+        <div><span class="label">Your peer ID</span><div id="peerIdOut">—</div></div>
+        <div><span class="label">Room</span><div id="roomOut">—</div></div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <section class="card">
+        <div class="section-head">
+          <h2>Lobby</h2>
+          <button id="startBtn" class="secondary hidden">Start game</button>
         </div>
+        <div id="lobbyList" class="list"></div>
       </section>
 
-      <section id="screen-menu" class="screen">
-        <div class="menu-grid">
-          <article class="panel large">
-            <div class="panel-head">
-              <h2>Play</h2>
-              <p>Start a room or join a friend.</p>
-            </div>
-            <div class="menu-actions">
-              <button class="primary-btn" id="menuCreateBtn">Create Game</button>
-              <button class="secondary-btn" id="menuJoinBtn">Join Game</button>
-            </div>
-          </article>
-
-          <article class="panel">
-            <div class="panel-head">
-              <h3>How it works</h3>
-            </div>
-            <ol class="how-list">
-              <li>One player creates a room and gets a code.</li>
-              <li>Everyone joins with a username and code.</li>
-              <li>Gameplay moves directly over WebRTC.</li>
-              <li>No game backend is needed after the page loads.</li>
-            </ol>
-          </article>
-
-          <article class="panel">
-            <div class="panel-head">
-              <h3>Local note</h3>
-            </div>
-            <p class="muted">This version is built for static hosting like GitHub Pages. PeerJS is used only for signaling; the game state lives in the browser hosting the room.</p>
-          </article>
+      <section class="card">
+        <div class="section-head">
+          <h2>Game</h2>
+          <div id="turnBadge" class="badge">Waiting</div>
         </div>
-      </section>
 
-      <section id="screen-create" class="screen">
-        <div class="split-layout">
-          <article class="panel">
-            <button class="link-btn" data-back="menu">← Back</button>
-            <div class="panel-head">
-              <h2>Create game</h2>
-              <p>Pick a username and generate a room code.</p>
-            </div>
-            <label class="field">
-              <span>Username</span>
-              <input id="createName" maxlength="20" placeholder="Blake" />
-            </label>
-            <button class="primary-btn full" id="createRoomBtn">Create room</button>
-          </article>
-
-          <article class="panel showcase">
-            <div class="panel-head">
-              <h3>Lobby preview</h3>
-            </div>
-            <div class="preview-card">
-              <div class="preview-title">Room code</div>
-              <div id="previewRoomCode" class="preview-code">----</div>
-              <div class="preview-sub">Share this with friends.</div>
-            </div>
-            <div class="preview-stack">
-              <div class="preview-pill">Clean menu</div>
-              <div class="preview-pill">Animated cards</div>
-              <div class="preview-pill">Host controls</div>
-            </div>
-          </article>
+        <div class="game-meta">
+          <div><span class="label">Turn</span><div id="turnOut">—</div></div>
+          <div><span class="label">Deck</span><div id="deckOut">—</div></div>
+          <div><span class="label">Books</span><div id="booksOut">—</div></div>
         </div>
-      </section>
 
-      <section id="screen-join" class="screen">
-        <div class="split-layout">
-          <article class="panel">
-            <button class="link-btn" data-back="menu">← Back</button>
-            <div class="panel-head">
-              <h2>Join game</h2>
-              <p>Enter the code your friend gave you.</p>
-            </div>
-            <label class="field">
-              <span>Username</span>
-              <input id="joinName" maxlength="20" placeholder="Blake" />
-            </label>
-            <label class="field">
-              <span>Room code</span>
-              <input id="joinCode" maxlength="8" placeholder="Q8J7" />
-            </label>
-            <button class="primary-btn full" id="joinRoomBtn">Join room</button>
-          </article>
+        <div id="askPanel" class="ask-panel hidden">
+          <label>
+            Ask player
+            <select id="targetSelect"></select>
+          </label>
 
-          <article class="panel showcase">
-            <div class="panel-head">
-              <h3>Best with friends</h3>
-            </div>
-            <div class="preview-card">
-              <div class="preview-title">Example join flow</div>
-              <div class="preview-code">Q8J7</div>
-              <div class="preview-sub">Type the code, connect, and play.</div>
-            </div>
-          </article>
+          <label>
+            Rank
+            <select id="rankSelect"></select>
+          </label>
+
+          <button id="askBtn">Ask</button>
         </div>
-      </section>
 
-      <section id="screen-lobby" class="screen">
-        <div class="lobby-layout">
-          <article class="panel">
-            <div class="panel-head row">
-              <div>
-                <h2>Lobby</h2>
-                <p>Room <span id="lobbyRoomCode" class="code-inline">----</span></p>
-              </div>
-              <button class="secondary-btn" id="copyCodeBtn">Copy code</button>
-            </div>
-
-            <div class="lobby-grid">
-              <div>
-                <h3>Players</h3>
-                <div id="playerList" class="player-list"></div>
-              </div>
-
-              <div>
-                <h3>Chat</h3>
-                <div id="chatLog" class="chat-log"></div>
-                <div class="chat-row">
-                  <input id="chatInput" maxlength="120" placeholder="Say something..." />
-                  <button class="secondary-btn" id="chatSendBtn">Send</button>
-                </div>
-              </div>
-            </div>
-
-            <div class="lobby-actions">
-              <button class="primary-btn" id="startGameBtn">Start game</button>
-              <button class="ghost-btn" id="leaveLobbyBtn">Leave</button>
-            </div>
-          </article>
-        </div>
-      </section>
-
-      <section id="screen-game" class="screen">
-        <div class="game-layout">
-          <aside class="panel sidebar">
-            <div class="panel-head">
-              <h2>Table</h2>
-              <p>Room <span id="gameRoomCode" class="code-inline">----</span></p>
-            </div>
-
-            <div class="turn-card">
-              <div class="turn-label">Current turn</div>
-              <div id="turnPlayer" class="turn-name">Waiting…</div>
-              <div id="turnHint" class="muted">Listen for your turn.</div>
-            </div>
-
-            <div>
-              <h3>Scoreboard</h3>
-              <div id="scoreboard" class="scoreboard"></div>
-            </div>
-
-            <div class="sidebar-actions">
-              <button class="secondary-btn" id="backToLobbyBtn">Lobby</button>
-              <button class="ghost-btn" id="leaveGameBtn">Leave</button>
-            </div>
-          </aside>
-
-          <section class="play-area">
-            <article class="panel table-panel">
-              <div class="table-top">
-                <div>
-                  <h3>Ask for a rank</h3>
-                  <p class="muted">Your asks are checked by the host and broadcast to everyone.</p>
-                </div>
-                <div id="deckCount" class="deck-badge">Deck: 52</div>
-              </div>
-
-              <div class="ask-controls">
-                <label class="field">
-                  <span>Player</span>
-                  <select id="targetSelect"></select>
-                </label>
-                <label class="field">
-                  <span>Rank</span>
-                  <select id="rankSelect"></select>
-                </label>
-                <button class="primary-btn" id="askBtn">Ask</button>
-              </div>
-
-              <div id="eventFeed" class="event-feed"></div>
-            </article>
-
-            <article class="panel hand-panel">
-              <div class="panel-head row">
-                <div>
-                  <h3>Your hand</h3>
-                  <p class="muted">Click cards to highlight them.</p>
-                </div>
-                <div id="bookCount" class="status-chip">Books: 0</div>
-              </div>
-              <div id="handCards" class="hand-cards"></div>
-            </article>
-          </section>
-        </div>
-      </section>
-
-      <section id="screen-gameover" class="screen">
-        <div class="hero-card tall">
-          <div class="hero-badge">🏁</div>
-          <h2 id="winnerTitle">Game over</h2>
-          <p id="winnerText">Thanks for playing.</p>
-          <div class="final-actions">
-            <button class="primary-btn" id="playAgainBtn">Back to menu</button>
+        <div class="hand-wrap">
+          <div class="section-head compact">
+            <h3>Your hand</h3>
+            <span id="handHint" class="subtle">Join a room to see your cards.</span>
           </div>
+          <div id="hand" class="hand"></div>
         </div>
       </section>
-    </main>
+    </section>
 
-    <footer class="footer">
-      <span id="footerNote">Ready.</span>
-    </footer>
-  </div>
-
-  <script src="app.js"></script>
+    <section class="card">
+      <div class="section-head">
+        <h2>Log</h2>
+        <button id="copyRoomBtn" class="secondary">Copy room code</button>
+      </div>
+      <div id="log" class="log" aria-live="polite"></div>
+    </section>
+  </main>
 </body>
 </html>

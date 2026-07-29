@@ -1,943 +1,874 @@
+/* Go Fish P2P
+   Host-authoritative Go Fish over PeerJS/WebRTC.
+*/
 
-(() => {
-  const $ = (sel) => document.querySelector(sel);
-  const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+const ROOM_PREFIX = 'gf-';
+const RANKS = ['A','2','3','4','5','6','7','8','9','10','J','Q','K'];
+const SUITS = ['♠','♥','♦','♣'];
+const CARD_SUITS = ['S','H','D','C'];
+const STARTING_HAND_2_TO_3 = 7;
+const STARTING_HAND_4_PLUS = 5;
 
-  const RANKS = ["A","2","3","4","5","6","7","8","9","10","J","Q","K"];
-  const SUITS = [
-    { sym: "♠", color: "black" },
-    { sym: "♥", color: "red" },
-    { sym: "♦", color: "red" },
-    { sym: "♣", color: "black" },
-  ];
+const $ = (id) => document.getElementById(id);
 
-  const els = {
-    status: $("#netStatus"),
-    footer: $("#footerNote"),
-    splash: $("#screen-splash"),
-    menu: $("#screen-menu"),
-    create: $("#screen-create"),
-    join: $("#screen-join"),
-    lobby: $("#screen-lobby"),
-    game: $("#screen-game"),
-    gameover: $("#screen-gameover"),
-    enterAppBtn: $("#enterAppBtn"),
-    menuCreateBtn: $("#menuCreateBtn"),
-    menuJoinBtn: $("#menuJoinBtn"),
-    createName: $("#createName"),
-    createRoomBtn: $("#createRoomBtn"),
-    joinName: $("#joinName"),
-    joinCode: $("#joinCode"),
-    joinRoomBtn: $("#joinRoomBtn"),
-    previewRoomCode: $("#previewRoomCode"),
-    lobbyRoomCode: $("#lobbyRoomCode"),
-    gameRoomCode: $("#gameRoomCode"),
-    copyCodeBtn: $("#copyCodeBtn"),
-    playerList: $("#playerList"),
-    chatLog: $("#chatLog"),
-    chatInput: $("#chatInput"),
-    chatSendBtn: $("#chatSendBtn"),
-    startGameBtn: $("#startGameBtn"),
-    leaveLobbyBtn: $("#leaveLobbyBtn"),
-    backToLobbyBtn: $("#backToLobbyBtn"),
-    leaveGameBtn: $("#leaveGameBtn"),
-    askBtn: $("#askBtn"),
-    targetSelect: $("#targetSelect"),
-    rankSelect: $("#rankSelect"),
-    handCards: $("#handCards"),
-    scoreboard: $("#scoreboard"),
-    turnPlayer: $("#turnPlayer"),
-    turnHint: $("#turnHint"),
-    deckCount: $("#deckCount"),
-    bookCount: $("#bookCount"),
-    eventFeed: $("#eventFeed"),
-    winnerTitle: $("#winnerTitle"),
-    winnerText: $("#winnerText"),
-    playAgainBtn: $("#playAgainBtn"),
+const ui = {
+  setupPanel: $('setupPanel'),
+  usernameInput: $('usernameInput'),
+  roomInput: $('roomInput'),
+  createBtn: $('createBtn'),
+  joinBtn: $('joinBtn'),
+  connStatus: $('connStatus'),
+  peerIdOut: $('peerIdOut'),
+  roomOut: $('roomOut'),
+  lobbyList: $('lobbyList'),
+  startBtn: $('startBtn'),
+  turnBadge: $('turnBadge'),
+  turnOut: $('turnOut'),
+  deckOut: $('deckOut'),
+  booksOut: $('booksOut'),
+  askPanel: $('askPanel'),
+  targetSelect: $('targetSelect'),
+  rankSelect: $('rankSelect'),
+  askBtn: $('askBtn'),
+  hand: $('hand'),
+  handHint: $('handHint'),
+  log: $('log'),
+  copyRoomBtn: $('copyRoomBtn'),
+};
+
+const state = {
+  peer: null,
+  conn: null,
+  isHost: false,
+  roomCode: '',
+  me: {
+    id: null,
+    username: '',
+  },
+  hostId: null,
+  players: [],
+  started: false,
+  turnId: null,
+  deckCount: 0,
+  yourHand: [],
+  yourBooks: 0,
+  lastWinner: null,
+  error: '',
+  pendingConnections: new Map(),
+};
+
+const hostState = {
+  deck: [],
+  players: new Map(),   // id -> { id, username, conn, hand: [], books: 0, connected: true }
+  order: [],
+  started: false,
+  turnIndex: 0,
+  logs: [],
+  roomCode: '',
+};
+
+function sanitizeName(name) {
+  const n = (name || '').trim().replace(/\s+/g, ' ');
+  return n.slice(0, 20) || 'Player';
+}
+
+function makeRoomCode(len = 6) {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let out = '';
+  for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
+  return out;
+}
+
+function hostPeerIdFromRoom(room) {
+  return `${ROOM_PREFIX}${room.toLowerCase()}`;
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function createDeck() {
+  const deck = [];
+  for (const rank of RANKS) {
+    for (const suit of CARD_SUITS) deck.push(`${rank}${suit}`);
+  }
+  return shuffle(deck);
+}
+
+function rankOf(card) {
+  return card.slice(0, card.length - 1);
+}
+
+function suitSymbol(card) {
+  const suit = card.slice(-1);
+  const idx = CARD_SUITS.indexOf(suit);
+  return SUITS[idx] || suit;
+}
+
+function cardSortValue(card) {
+  const rank = rankOf(card);
+  const suit = card.slice(-1);
+  return RANKS.indexOf(rank) * 10 + CARD_SUITS.indexOf(suit);
+}
+
+function ensureUniqueName(baseName, existingNames) {
+  let name = baseName;
+  let n = 2;
+  const taken = new Set(existingNames.map(s => s.toLowerCase()));
+  while (taken.has(name.toLowerCase())) {
+    name = `${baseName} #${n++}`;
+  }
+  return name;
+}
+
+function addLog(msg, kind = '') {
+  const line = document.createElement('div');
+  line.className = `log-line ${kind}`.trim();
+  line.textContent = msg;
+  ui.log.prepend(line);
+  while (ui.log.children.length > 60) ui.log.removeChild(ui.log.lastChild);
+}
+
+function setStatus(text) {
+  ui.connStatus.textContent = text;
+}
+
+function setRoom(code) {
+  state.roomCode = code || '';
+  ui.roomOut.textContent = code || '—';
+  ui.copyRoomBtn.disabled = !code;
+}
+
+function setPeerId(id) {
+  ui.peerIdOut.textContent = id || '—';
+}
+
+function isConnected() {
+  return state.peer && (state.isHost ? true : state.conn && state.conn.open);
+}
+
+function sendToConn(conn, message) {
+  if (!conn || !conn.open) return;
+  conn.send(message);
+}
+
+function sendToClient(playerId, message) {
+  const p = hostState.players.get(playerId);
+  if (p && p.conn && p.conn.open) p.conn.send(message);
+}
+
+function broadcast(message) {
+  for (const p of hostState.players.values()) {
+    if (p.conn && p.conn.open) p.conn.send(message);
+  }
+}
+
+function publicPlayerList() {
+  return state.players.map(p => ({
+    id: p.id,
+    username: p.username,
+    cards: p.cards,
+    books: p.books,
+    isHost: p.id === state.hostId,
+  }));
+}
+
+function hostPublicPlayerList() {
+  return [...hostState.players.values()].map(p => ({
+    id: p.id,
+    username: p.username,
+    cards: p.hand.length,
+    books: p.books,
+    isHost: p.id === state.hostId,
+    connected: !!(p.conn && p.conn.open),
+  }));
+}
+
+function currentTurnPlayer() {
+  if (!state.turnId) return null;
+  return state.players.find(p => p.id === state.turnId) || null;
+}
+
+function nextTurnIdFromOrder(order, startIndex) {
+  if (!order.length) return null;
+  for (let i = 0; i < order.length; i++) {
+    const idx = (startIndex + i) % order.length;
+    const pid = order[idx];
+    const player = hostState.players.get(pid);
+    if (player && player.hand.length > 0) return pid;
+  }
+  return null;
+}
+
+function nextLivingTurnIndex(fromIndex = hostState.turnIndex + 1) {
+  if (!hostState.order.length) return 0;
+  for (let i = 0; i < hostState.order.length; i++) {
+    const idx = (fromIndex + i) % hostState.order.length;
+    const pid = hostState.order[idx];
+    const p = hostState.players.get(pid);
+    if (p && p.hand.length > 0) return idx;
+  }
+  return fromIndex % hostState.order.length;
+}
+
+function countRanks(hand) {
+  const counts = new Map();
+  for (const c of hand) counts.set(rankOf(c), (counts.get(rankOf(c)) || 0) + 1);
+  return counts;
+}
+
+function removeBooksFromPlayer(player) {
+  let removed = 0;
+  const counts = countRanks(player.hand);
+  for (const [rank, count] of counts.entries()) {
+    if (count === 4) {
+      player.hand = player.hand.filter(c => rankOf(c) !== rank);
+      player.books += 1;
+      removed += 1;
+      addLog(`${player.username} completed a book of ${rank}s.`, 'good');
+    }
+  }
+  return removed;
+}
+
+function dealStartingHands(numPlayers) {
+  const per = numPlayers <= 3 ? STARTING_HAND_2_TO_3 : STARTING_HAND_4_PLUS;
+  for (const pid of hostState.order) {
+    const p = hostState.players.get(pid);
+    p.hand = [];
+    p.books = 0;
+    for (let i = 0; i < per; i++) {
+      if (hostState.deck.length) p.hand.push(hostState.deck.pop());
+    }
+    p.hand.sort((a, b) => cardSortValue(a) - cardSortValue(b));
+    removeBooksFromPlayer(p);
+  }
+}
+
+function syncHostView() {
+  state.started = hostState.started;
+  state.players = hostPublicPlayerList();
+  state.hostId = state.me.id;
+  state.turnId = hostState.started ? hostState.order[hostState.turnIndex] || null : null;
+  state.deckCount = hostState.deck.length;
+  state.yourBooks = hostState.players.get(state.me.id)?.books || 0;
+  state.yourHand = [...(hostState.players.get(state.me.id)?.hand || [])].sort((a, b) => cardSortValue(a) - cardSortValue(b));
+  render();
+}
+
+function makeViewFor(playerId) {
+  const me = hostState.players.get(playerId);
+  return {
+    type: 'state',
+    roomCode: hostState.roomCode,
+    hostId: state.hostId,
+    started: hostState.started,
+    turnId: hostState.started ? hostState.order[hostState.turnIndex] || null : null,
+    deckCount: hostState.deck.length,
+    players: hostPublicPlayerList(),
+    yourHand: me ? [...me.hand].sort((a,b) => cardSortValue(a) - cardSortValue(b)) : [],
+    yourBooks: me ? me.books : 0,
+    logs: hostState.logs.slice(-8),
+    winner: hostState.winner || null,
   };
+}
 
-  const state = {
-    screen: "splash",
-    roomCode: "",
-    username: "",
-    isHost: false,
-    peer: null,
-    peerId: null,
-    hostId: null,
-    connections: new Map(), // peerId -> conn
-    players: [], // {id, username, isHost, connected, books, handCount}
-    chat: [],
-    selectedCardId: null,
-    myCards: [],
-    game: null,
-    joinedAt: Date.now(),
-    lastEvent: "",
-    localPeerId: null,
-    ready: false,
-    reconnectTimer: null,
-    connectionAttempts: 0,
-  };
-
-  function showScreen(name) {
-    state.screen = name;
-    [els.splash, els.menu, els.create, els.join, els.lobby, els.game, els.gameover].forEach(el => el.classList.remove("screen-active"));
-    const map = {
-      splash: els.splash,
-      menu: els.menu,
-      create: els.create,
-      join: els.join,
-      lobby: els.lobby,
-      game: els.game,
-      gameover: els.gameover,
-    };
-    map[name].classList.add("screen-active");
-    setFooter(`Screen: ${name}`);
+function syncAllClients() {
+  for (const p of hostState.players.values()) {
+    sendToClient(p.id, makeViewFor(p.id));
   }
+  syncHostView();
+}
 
-  function setStatus(text) {
-    els.status.textContent = text;
-  }
+function isGameOver() {
+  if (!hostState.started) return false;
+  const anyCards = [...hostState.players.values()].some(p => p.hand.length > 0);
+  const deckEmpty = hostState.deck.length === 0;
+  return deckEmpty && !anyCards;
+}
 
-  function setFooter(text) {
-    els.footer.textContent = text;
-  }
+function scoreBoard() {
+  return [...hostState.players.values()]
+    .map(p => ({ username: p.username, books: p.books }))
+    .sort((a, b) => b.books - a.books || a.username.localeCompare(b.username));
+}
 
-  function normalizeName(v) {
-    return (v || "").trim().slice(0, 20) || "Player";
-  }
+function endGame() {
+  hostState.started = false;
+  const scores = scoreBoard();
+  const top = scores[0]?.books ?? 0;
+  const winners = scores.filter(s => s.books === top).map(s => s.username);
+  const winnerText = winners.length === 1 ? winners[0] : winners.join(', ');
+  hostState.winner = winnerText;
+  hostState.logs.push(`Game over. Winner: ${winnerText}`);
+  broadcast({ type: 'game_over', scores, winner: winnerText });
+  syncAllClients();
+  addLog(`Game over. Winner: ${winnerText}`, 'good');
+}
 
-  function normalizeCode(v) {
-    return (v || "").replace(/[^a-z0-9]/gi, "").toUpperCase().slice(0, 8);
-  }
-
-  function randomCode() {
-    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    let code = "";
-    for (let i = 0; i < 4; i++) code += chars[Math.floor(Math.random() * chars.length)];
-    return code;
-  }
-
-  function peerIdForCode(code) {
-    return `gofish-${code}`;
-  }
-
-  function uid() {
-    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  }
-
-  function notify(text) {
-    state.lastEvent = text;
-    els.eventFeed.insertAdjacentHTML("afterbegin", `<div class="event-item">${escapeHTML(text)}</div>`);
-    while (els.eventFeed.children.length > 6) els.eventFeed.lastElementChild.remove();
-  }
-
-  function pushChat(user, text, system = false) {
-    const item = { user, text, system, at: Date.now() };
-    state.chat.push(item);
-    if (state.chat.length > 100) state.chat.shift();
-    renderChat();
-  }
-
-  function renderChat() {
-    els.chatLog.innerHTML = state.chat.map((m) => `
-      <div class="chat-item">
-        <strong>${escapeHTML(m.system ? "System" : m.user)}</strong>
-        <div>${escapeHTML(m.text)}</div>
-      </div>
-    `).join("");
-    els.chatLog.scrollTop = els.chatLog.scrollHeight;
-  }
-
-  function deckCreate() {
-    const deck = [];
-    for (const rank of RANKS) {
-      for (const suit of SUITS) deck.push({ id: uid(), rank, suit: suit.sym, color: suit.color });
-    }
-    // Fisher-Yates
-    for (let i = deck.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [deck[i], deck[j]] = [deck[j], deck[i]];
-    }
-    return deck;
-  }
-
-  function cardsByRank(hand, rank) {
-    return hand.filter(c => c.rank === rank);
-  }
-
-  function handRanks(hand) {
-    return [...new Set(hand.map(c => c.rank))];
-  }
-
-  function countBooks(hand) {
-    let books = 0;
-    const byRank = new Map();
-    hand.forEach(c => byRank.set(c.rank, (byRank.get(c.rank) || 0) + 1));
-    for (const v of byRank.values()) if (v === 4) books++;
-    return books;
-  }
-
-  function removeBooksFromHand(hand) {
-    const byRank = new Map();
-    hand.forEach(c => byRank.set(c.rank, (byRank.get(c.rank) || []).concat(c)));
-    const keep = [];
-    let books = [];
-    for (const [rank, cards] of byRank.entries()) {
-      if (cards.length === 4) books.push(rank);
-      else keep.push(...cards);
-    }
-    return { hand: keep, books };
-  }
-
-  function makeInitialGame(players) {
-    const deck = deckCreate();
-    const hands = {};
-    players.forEach(p => hands[p.id] = []);
-    const dealCount = 5;
-    const n = players.length;
-    for (let i = 0; i < dealCount; i++) {
-      for (let j = 0; j < n; j++) {
-        const card = deck.pop();
-        if (card) hands[players[j].id].push(card);
-      }
-    }
-    const books = {};
-    players.forEach(p => books[p.id] = []);
-    for (const p of players) {
-      const cleaned = removeBooksFromHand(hands[p.id]);
-      hands[p.id] = cleaned.hand;
-      books[p.id].push(...cleaned.books);
-    }
-    return {
-      deck,
-      hands,
-      books,
-      turnOrder: players.map(p => p.id),
-      turnIndex: 0,
-      lastAction: "Game started.",
-      lastTurnTarget: null,
-      lastTurnRank: null,
-      winner: null,
-      phase: "playing",
-    };
-  }
-
-  function currentPlayerId() {
-    return state.game?.turnOrder?.[state.game.turnIndex] || null;
-  }
-
-  function playerById(id) {
-    return state.players.find(p => p.id === id);
-  }
-
-  function isMyTurn() {
-    return currentPlayerId() === state.localPeerId;
-  }
-
-  function broadcast(msg, exceptId = null) {
-    for (const [peerId, conn] of state.connections.entries()) {
-      if (exceptId && peerId === exceptId) continue;
-      safeSend(conn, msg);
-    }
-  }
-
-  function safeSend(conn, msg) {
-    try {
-      if (conn && conn.open) conn.send(msg);
-    } catch (err) {
-      console.warn("send failed", err);
-    }
-  }
-
-  function hostBroadcastState() {
-    if (!state.isHost || !state.game) return;
-    const payload = buildPublicState();
-    broadcast({ type: "state", state: payload });
-    renderAll();
-  }
-
-  function buildPublicState() {
-    return {
-      roomCode: state.roomCode,
-      players: state.players.map(p => ({
-        id: p.id,
-        username: p.username,
-        isHost: p.isHost,
-        connected: p.connected,
-        books: state.game.books[p.id]?.length || 0,
-        handCount: state.game.hands[p.id]?.length || 0,
-      })),
-      deckCount: state.game.deck.length,
-      turnPlayerId: currentPlayerId(),
-      turnIndex: state.game.turnIndex,
-      phase: state.game.phase,
-      winner: state.game.winner,
-      lastAction: state.game.lastAction,
-      hands: state.game.hands,
-      books: state.game.books,
-    };
-  }
-
-  function applyState(payload) {
-    state.roomCode = payload.roomCode;
-    state.players = payload.players.map(p => ({
-      id: p.id,
-      username: p.username,
-      isHost: p.isHost,
-      connected: p.connected,
-      books: p.books || 0,
-      handCount: p.handCount || 0,
-    }));
-    if (payload.phase === "playing") {
-      state.game = {
-        deck: new Array(payload.deckCount).fill(null),
-        hands: payload.hands,
-        books: payload.books,
-        turnOrder: payload.players.map(p => p.id),
-        turnIndex: payload.turnIndex,
-        lastAction: payload.lastAction,
-        phase: payload.phase,
-        winner: payload.winner,
-      };
-      state.myCards = (payload.hands[state.localPeerId] || []).slice();
-      state.selectedCardId = null;
-      updateUIFromState();
+function advanceTurn(skipToNext = true) {
+  if (!hostState.order.length) return;
+  if (hostState.started) {
+    if (skipToNext) {
+      hostState.turnIndex = nextLivingTurnIndex(hostState.turnIndex + 1);
     } else {
-      state.game = {
-        deck: new Array(payload.deckCount).fill(null),
-        hands: payload.hands,
-        books: payload.books,
-        turnOrder: payload.players.map(p => p.id),
-        turnIndex: payload.turnIndex,
-        lastAction: payload.lastAction,
-        phase: payload.phase,
-        winner: payload.winner,
-      };
-      state.myCards = (payload.hands[state.localPeerId] || []).slice();
-      updateUIFromState();
+      hostState.turnIndex = nextLivingTurnIndex(hostState.turnIndex);
     }
+    hostState.turnIndex %= hostState.order.length;
   }
+}
 
-  function setLocalIdentity(username, peerId) {
-    state.username = normalizeName(username);
-    state.localPeerId = peerId;
-    const existing = state.players.find(p => p.id === peerId);
-    if (existing) existing.username = state.username;
-    else state.players.unshift({ id: peerId, username: state.username, isHost: state.isHost, connected: true, books: 0, handCount: 0 });
+function maybeAutoDrawIfEmptyTurnPlayer() {
+  const pid = hostState.order[hostState.turnIndex];
+  const p = hostState.players.get(pid);
+  if (!p) return;
+  if (p.hand.length === 0 && hostState.deck.length > 0) {
+    const drawn = hostState.deck.pop();
+    p.hand.push(drawn);
+    p.hand.sort((a, b) => cardSortValue(a) - cardSortValue(b));
+    addLog(`${p.username} had no cards and drew a card to continue.`);
+    removeBooksFromPlayer(p);
   }
+}
 
-  function resetChatWithSystem(text) {
-    state.chat = [];
-    pushChat("System", text, true);
+function startGame() {
+  if (!state.isHost) return;
+  if (hostState.started) return;
+  if (hostState.players.size < 2) {
+    addLog('Need at least 2 players to start.', 'bad');
+    return;
   }
+  hostState.deck = createDeck();
+  hostState.started = true;
+  hostState.turnIndex = 0;
+  hostState.winner = null;
+  hostState.logs.push('Game started.');
+  dealStartingHands(hostState.players.size);
+  hostState.order = [...hostState.players.keys()];
+  hostState.turnIndex = 0;
+  maybeAutoDrawIfEmptyTurnPlayer();
+  syncAllClients();
+  addLog('Game started.', 'good');
+}
 
-  function initPeerForHost(code, username) {
-    teardownPeer(false);
-    const id = peerIdForCode(code);
-    state.roomCode = code;
-    state.isHost = true;
-    state.username = normalizeName(username);
-    state.hostId = id;
-    setStatus("Connecting...");
-    setFooter("Creating room.");
-    state.peer = new Peer(id, {
-      debug: 1,
-    });
-    attachPeerEventsHost();
+function hostSendLobby() {
+  const list = [...hostState.players.values()].map(p => ({
+    id: p.id,
+    username: p.username,
+    cards: p.hand.length,
+    books: p.books,
+    isHost: p.id === state.me.id,
+  }));
+  broadcast({
+    type: 'lobby',
+    roomCode: hostState.roomCode,
+    hostId: state.me.id,
+    players: list,
+    started: hostState.started,
+  });
+}
+
+function renderLobby() {
+  ui.lobbyList.innerHTML = '';
+  const players = state.players.length ? state.players : [];
+  if (!players.length) {
+    const empty = document.createElement('div');
+    empty.className = 'player-row';
+    empty.innerHTML = '<div>No players yet</div><div class="meta">Waiting for connections</div>';
+    ui.lobbyList.appendChild(empty);
+    return;
   }
-
-  function initPeerForGuest(code, username) {
-    teardownPeer(false);
-    const roomCode = normalizeCode(code);
-    const hostId = peerIdForCode(roomCode);
-    state.roomCode = roomCode;
-    state.isHost = false;
-    state.username = normalizeName(username);
-    state.hostId = hostId;
-    setStatus("Connecting...");
-    setFooter("Joining room.");
-    state.peer = new Peer(undefined, { debug: 1 });
-    attachPeerEventsGuest(hostId);
-  }
-
-  function attachPeerEventsHost() {
-    const peer = state.peer;
-    peer.on("open", (id) => {
-      state.localPeerId = id;
-      state.connections.clear();
-      state.players = [{ id, username: state.username, isHost: true, connected: true, books: 0, handCount: 0 }];
-      setStatus(`Hosting ${state.roomCode}`);
-      setFooter(`Room ${state.roomCode} ready.`);
-      state.ready = true;
-      showScreen("lobby");
-      renderLobby();
-      resetChatWithSystem(`Room ${state.roomCode} created.`);
-      notify("Waiting for players...");
-      createEmptyGameShell();
-    });
-
-    peer.on("connection", (conn) => {
-      wireConnection(conn, true);
-    });
-
-    peer.on("error", (err) => {
-      console.error(err);
-      setStatus("Host error");
-      notify(`Host error: ${err.type || err.message}`);
-    });
-  }
-
-  function attachPeerEventsGuest(hostId) {
-    const peer = state.peer;
-    peer.on("open", (id) => {
-      state.localPeerId = id;
-      setStatus("Joining...");
-      const conn = peer.connect(hostId, { reliable: true });
-      wireConnection(conn, false);
-    });
-
-    peer.on("error", (err) => {
-      console.error(err);
-      setStatus("Peer error");
-      notify(`Connection error: ${err.type || err.message}`);
-    });
-  }
-
-  function wireConnection(conn, fromHost) {
-    const peerId = conn.peer;
-    state.connections.set(peerId, conn);
-
-    conn.on("open", () => {
-      setStatus(state.isHost ? `Hosting ${state.roomCode}` : `Connected to ${state.roomCode}`);
-      if (state.isHost) {
-        const existing = state.players.find(p => p.id === peerId);
-        if (!existing) {
-          state.players.push({ id: peerId, username: `Guest ${state.players.length}`, isHost: false, connected: true, books: 0, handCount: 0 });
-        } else {
-          existing.connected = true;
-        }
-        safeSend(conn, { type: "welcome", roomCode: state.roomCode, hostId: state.localPeerId });
-        safeSend(conn, { type: "lobby", players: serializePlayers() });
-        safeSend(conn, { type: "chat-sync", chat: state.chat });
-        if (state.game) safeSend(conn, { type: "state", state: buildPublicState() });
-        broadcast({ type: "lobby", players: serializePlayers() });
-        renderLobby();
-        notify(`${displayName(peerId)} joined.`);
-        pushChat("System", `${displayName(peerId)} joined the room.`, true);
-      } else {
-        safeSend(conn, { type: "join", username: state.username, peerId: state.localPeerId });
-      }
-    });
-
-    conn.on("data", (msg) => handleMessage(msg, conn));
-    conn.on("close", () => {
-      state.connections.delete(peerId);
-      if (state.isHost) {
-        const p = state.players.find(x => x.id === peerId);
-        if (p) p.connected = false;
-        broadcast({ type: "lobby", players: serializePlayers() });
-        renderLobby();
-        notify(`${displayName(peerId)} disconnected.`);
-        pushChat("System", `${displayName(peerId)} disconnected.`, true);
-      } else {
-        setStatus("Disconnected");
-        notify("Connection closed.");
-      }
-    });
-    conn.on("error", (err) => {
-      console.error(err);
-      notify(`Connection issue: ${err.type || err.message}`);
-    });
-  }
-
-  function displayName(id) {
-    return playerById(id)?.username || id.slice(0, 6);
-  }
-
-  function serializePlayers() {
-    return state.players.map(p => ({
-      id: p.id,
-      username: p.username,
-      isHost: p.isHost,
-      connected: p.connected !== false,
-      books: state.game?.books?.[p.id]?.length || p.books || 0,
-      handCount: state.game?.hands?.[p.id]?.length || p.handCount || 0,
-    }));
-  }
-
-  function handleMessage(msg, conn) {
-    if (!msg || typeof msg !== "object") return;
-    if (state.isHost) {
-      switch (msg.type) {
-        case "join": {
-          const p = state.players.find(x => x.id === conn.peer);
-          if (p) {
-            p.username = normalizeName(msg.username);
-            p.connected = true;
-          } else {
-            state.players.push({ id: conn.peer, username: normalizeName(msg.username), isHost: false, connected: true, books: 0, handCount: 0 });
-          }
-          broadcast({ type: "lobby", players: serializePlayers() });
-          safeSend(conn, { type: "lobby", players: serializePlayers() });
-          pushChat("System", `${displayName(conn.peer)} is here.`, true);
-          notify(`${displayName(conn.peer)} joined.`);
-          renderLobby();
-          break;
-        }
-        case "chat": {
-          const user = displayName(conn.peer);
-          pushChat(user, msg.text);
-          broadcast({ type: "chat", user, text: msg.text });
-          break;
-        }
-        case "start-request": {
-          if (!state.game && state.players.length >= 2) startGame();
-          break;
-        }
-        case "ask": {
-          if (state.game && state.game.phase === "playing") handleAsk(conn.peer, msg);
-          break;
-        }
-        case "play-again": {
-          break;
-        }
-      }
-    } else {
-      switch (msg.type) {
-        case "welcome":
-          state.hostId = msg.hostId;
-          break;
-        case "lobby":
-          state.players = msg.players;
-          renderLobby();
-          break;
-        case "chat-sync":
-          state.chat = msg.chat || [];
-          renderChat();
-          break;
-        case "chat":
-          pushChat(msg.user, msg.text);
-          break;
-        case "state":
-          applyState(msg.state);
-          if (msg.state.phase === "playing") showScreen("game");
-          if (msg.state.phase === "finished") showScreen("gameover");
-          break;
-        case "game-started":
-          notify("The game has started.");
-          showScreen("game");
-          break;
-        case "event":
-          notify(msg.text);
-          break;
-        case "game-over":
-          showGameOver(msg.winnerName, msg.reason || "Game complete.");
-          break;
-      }
-    }
-  }
-
-  function createEmptyGameShell() {
-    state.game = null;
-    state.myCards = [];
-    state.selectedCardId = null;
-    renderLobby();
-  }
-
-  function startGame() {
-    if (!state.isHost) return;
-    if (state.players.length < 2) {
-      notify("Need at least 2 players.");
-      return;
-    }
-    // ensure host is first
-    state.players.sort((a, b) => Number(b.isHost) - Number(a.isHost));
-    state.game = makeInitialGame(state.players);
-    state.game.phase = "playing";
-    state.game.turnIndex = 0;
-    state.game.lastAction = "Game started.";
-    state.game.winner = null;
-    state.myCards = state.game.hands[state.localPeerId] || [];
-    const cleaned = removeBooksFromHand(state.game.hands[state.localPeerId]);
-    state.game.hands[state.localPeerId] = cleaned.hand;
-    state.game.books[state.localPeerId] = state.game.books[state.localPeerId] || [];
-    state.game.books[state.localPeerId].push(...cleaned.books);
-    notify("Game started.");
-    broadcast({ type: "game-started" });
-    hostBroadcastState();
-    showScreen("game");
-    renderGame();
-  }
-
-  function handleAsk(fromId, { targetId, rank }) {
-    if (!state.game || state.game.phase !== "playing") return;
-    if (fromId !== currentPlayerId()) {
-      safeSend(state.connections.get(fromId), { type: "event", text: "It is not your turn." });
-      return;
-    }
-    if (!targetId || !rank) return;
-    if (targetId === fromId) {
-      safeSend(state.connections.get(fromId), { type: "event", text: "You cannot ask yourself." });
-      return;
-    }
-    const asker = playerById(fromId);
-    const target = playerById(targetId);
-    if (!asker || !target) return;
-    const targetHand = state.game.hands[targetId] || [];
-    const matches = cardsByRank(targetHand, rank);
-    let eventText = `${asker.username} asked ${target.username} for ${rank}s.`;
-    if (matches.length > 0) {
-      state.game.hands[targetId] = targetHand.filter(c => c.rank !== rank);
-      state.game.hands[fromId] = (state.game.hands[fromId] || []).concat(matches);
-      eventText += ` ${target.username} handed over ${matches.length} card${matches.length > 1 ? "s" : ""}.`;
-      // asker gets another turn
-    } else {
-      const drawn = state.game.deck.pop();
-      if (drawn) {
-        state.game.hands[fromId] = (state.game.hands[fromId] || []).concat([drawn]);
-        eventText += ` Go Fish — ${asker.username} drew ${drawn.rank}${drawn.suit}.`;
-        if (drawn.rank === rank) {
-          eventText += ` That matches, so ${asker.username} goes again.`;
-        } else {
-          advanceTurn();
-        }
-      } else {
-        eventText += " The deck is empty.";
-        advanceTurn();
-      }
-    }
-    state.game.lastAction = eventText;
-    checkBooksForPlayer(fromId);
-    if (matches.length > 0) checkBooksForPlayer(fromId);
-    checkBooksForPlayer(targetId);
-    checkEndGame();
-    broadcast({ type: "event", text: eventText });
-    hostBroadcastState();
-    notify(eventText);
-    renderGame();
-  }
-
-  function advanceTurn() {
-    if (!state.game) return;
-    state.game.turnIndex = (state.game.turnIndex + 1) % state.game.turnOrder.length;
-  }
-
-  function checkBooksForPlayer(pid) {
-    const hand = state.game.hands[pid] || [];
-    const cleaned = removeBooksFromHand(hand);
-    state.game.hands[pid] = cleaned.hand;
-    state.game.books[pid] = state.game.books[pid] || [];
-    if (cleaned.books.length) {
-      state.game.books[pid].push(...cleaned.books);
-      const name = displayName(pid);
-      state.game.lastAction = `${name} completed ${cleaned.books.length} book${cleaned.books.length > 1 ? "s" : ""}.`;
-      notify(state.game.lastAction);
-    }
-  }
-
-  function checkEndGame() {
-    const allBooks = Object.values(state.game.books).reduce((acc, arr) => acc + arr.length, 0);
-    const totalBooksPossible = 13;
-    if (allBooks >= totalBooksPossible) {
-      const scores = state.players.map(p => ({
-        id: p.id,
-        username: p.username,
-        books: state.game.books[p.id]?.length || 0,
-      })).sort((a,b) => b.books - a.books);
-      const winner = scores[0];
-      state.game.phase = "finished";
-      state.game.winner = winner?.id || null;
-      broadcast({ type: "game-over", winnerName: winner?.username || "Unknown", reason: "All books collected." });
-      hostBroadcastState();
-      showGameOver(winner?.username || "Unknown", "All books collected.");
-    }
-  }
-
-  function showGameOver(winnerName, reason) {
-    state.game = state.game || {};
-    state.game.phase = "finished";
-    els.winnerTitle.textContent = winnerName === "Unknown" ? "Game over" : `${winnerName} wins!`;
-    els.winnerText.textContent = reason || "Thanks for playing.";
-    showScreen("gameover");
-  }
-
-  function renderLobby() {
-    els.lobbyRoomCode.textContent = state.roomCode || "----";
-    const players = state.isHost ? state.players : (state.players || []);
-    els.playerList.innerHTML = players.map(p => `
-      <div class="player-row">
-        <div class="player-name">
-          <span class="player-dot ${p.isHost ? "host" : (p.connected === false ? "offline" : "online")}"></span>
-          <span>${escapeHTML(p.username || "Player")}${p.isHost ? " (host)" : ""}</span>
-        </div>
-        <span class="muted">${(p.books || 0)} books</span>
+  for (const p of players) {
+    const row = document.createElement('div');
+    row.className = `player-row ${p.id === state.me.id ? 'me' : ''}`;
+    row.innerHTML = `
+      <div>
+        <strong>${escapeHtml(p.username)}${p.id === state.me.id ? ' (you)' : ''}</strong>
+        <div class="meta">${p.cards} cards · ${p.books} books</div>
       </div>
-    `).join("");
-    $("#startGameBtn").style.display = state.isHost ? "inline-flex" : "none";
-    renderChat();
-  }
-
-  function renderGame() {
-    if (!state.game) return;
-    els.gameRoomCode.textContent = state.roomCode || "----";
-    els.turnPlayer.textContent = displayName(currentPlayerId()) || "Waiting…";
-    els.turnHint.textContent = isMyTurn() ? "It is your turn." : "Wait for the current player.";
-    els.deckCount.textContent = `Deck: ${state.game.deck.length}`;
-    els.bookCount.textContent = `Books: ${state.game.books[state.localPeerId]?.length || 0}`;
-    els.scoreboard.innerHTML = state.players.map(p => `
-      <div class="score-row">
-        <span>${escapeHTML(p.username || "Player")}${p.id === state.localPeerId ? " (you)" : ""}${p.isHost ? " • host" : ""}</span>
-        <strong>${state.game.books[p.id]?.length || 0}</strong>
-      </div>
-    `).join("");
-    const targetOptions = state.players.filter(p => p.id !== state.localPeerId).map(p => `<option value="${p.id}">${escapeHTML(p.username || "Player")}</option>`).join("");
-    els.targetSelect.innerHTML = targetOptions || `<option value="">No target</option>`;
-    els.rankSelect.innerHTML = RANKS.map(r => `<option value="${r}">${r}</option>`).join("");
-    const cards = (state.game.hands[state.localPeerId] || []).slice().sort((a,b) => RANKS.indexOf(a.rank) - RANKS.indexOf(b.rank));
-    state.myCards = cards;
-    els.handCards.innerHTML = cards.map(card => renderCard(card)).join("");
-    updateAskButton();
-    renderEventFeed();
-    renderScores();
-  }
-
-  function updateUIFromState() {
-    renderLobby();
-    renderGame();
-    if (state.game?.phase === "finished") showGameOver(displayName(state.game.winner), "All books collected.");
-  }
-
-  function renderScores() {
-    els.scoreboard.innerHTML = state.players.map(p => `
-      <div class="score-row">
-        <span>${escapeHTML(p.username || "Player")}${p.id === state.localPeerId ? " (you)" : ""}${p.isHost ? " • host" : ""}</span>
-        <strong>${state.game?.books[p.id]?.length || 0}</strong>
-      </div>
-    `).join("");
-  }
-
-  function renderEventFeed() {
-    if (!state.game) return;
-    if (!state.game.lastAction) return;
-    if (!els.eventFeed.children.length) {
-      notify(state.game.lastAction);
-    }
-  }
-
-  function renderCard(card) {
-    const cls = card.color === "red" ? "red" : "black";
-    return `
-      <button class="card ${cls} ${state.selectedCardId === card.id ? 'selected' : ''}" data-card-id="${card.id}" title="${card.rank}${card.suit}">
-        <div class="rank">${escapeHTML(card.rank)}</div>
-        <div class="center">${escapeHTML(card.suit)}</div>
-        <div class="suit">${escapeHTML(card.rank)}${escapeHTML(card.suit)}</div>
-      </button>
+      <div class="meta">${p.isHost ? 'Host' : (p.connected === false ? 'Disconnected' : 'Ready')}</div>
     `;
+    ui.lobbyList.appendChild(row);
   }
+}
 
-  function updateAskButton() {
-    const onTurn = isMyTurn();
-    els.askBtn.disabled = !onTurn || !state.game || state.game.phase !== "playing";
-    els.targetSelect.disabled = !onTurn;
-    els.rankSelect.disabled = !onTurn;
-    els.askBtn.textContent = onTurn ? "Ask" : "Waiting…";
+function renderHand() {
+  ui.hand.innerHTML = '';
+  const hand = state.yourHand || [];
+  if (!state.started) {
+    ui.handHint.textContent = 'Create or join a room, then start the game.';
+  } else if (!hand.length) {
+    ui.handHint.textContent = 'No cards in hand.';
+  } else {
+    ui.handHint.textContent = `${hand.length} cards`;
   }
-
-  function escapeHTML(str) {
-    return String(str ?? "")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#39;");
+  if (!hand.length) return;
+  for (const card of hand) {
+    const chip = document.createElement('div');
+    chip.className = 'card-chip';
+    const rank = rankOf(card);
+    chip.innerHTML = `<div class="rank">${escapeHtml(rank)}</div><div class="suit">${escapeHtml(suitSymbol(card))}</div>`;
+    ui.hand.appendChild(chip);
   }
+}
 
-  function teardownPeer(clearUI = true) {
-    try {
-      for (const conn of state.connections.values()) {
-        try { conn.close(); } catch {}
-      }
-      state.connections.clear();
-      if (state.peer) {
-        try { state.peer.destroy(); } catch {}
-      }
-    } catch {}
-    state.peer = null;
-    state.game = null;
-    state.players = [];
-    state.chat = [];
-    state.selectedCardId = null;
-    state.localPeerId = null;
-    state.roomCode = "";
-    state.hostId = null;
-    state.isHost = false;
-    state.ready = false;
-    if (clearUI) {
-      els.playerList.innerHTML = "";
-      els.chatLog.innerHTML = "";
-      els.scoreboard.innerHTML = "";
-      els.handCards.innerHTML = "";
-      els.eventFeed.innerHTML = "";
-      els.turnPlayer.textContent = "Waiting…";
-      els.turnHint.textContent = "Listen for your turn.";
-      els.deckCount.textContent = "Deck: 52";
-      els.bookCount.textContent = "Books: 0";
-    }
-    setStatus("Offline");
+function renderGameMeta() {
+  ui.turnOut.textContent = state.turnId ? (state.players.find(p => p.id === state.turnId)?.username || '—') : '—';
+  ui.deckOut.textContent = String(state.deckCount ?? 0);
+  const books = state.players.map(p => `${p.username}: ${p.books}`).join(' · ') || '—';
+  ui.booksOut.textContent = books;
+  const meTurn = state.started && state.turnId === state.me.id;
+  ui.turnBadge.textContent = !state.started ? 'Waiting' : (meTurn ? 'Your turn' : 'In progress');
+  ui.turnBadge.className = `badge ${meTurn ? 'good' : ''}`.trim();
+}
+
+function renderAskPanel() {
+  const meTurn = state.started && state.turnId === state.me.id;
+  ui.askPanel.classList.toggle('hidden', !meTurn);
+  ui.askBtn.disabled = !meTurn;
+  if (!meTurn) return;
+
+  const otherPlayers = state.players.filter(p => p.id !== state.me.id && (p.cards > 0 || state.deckCount > 0));
+  ui.targetSelect.innerHTML = '';
+  for (const p of otherPlayers) {
+    const opt = document.createElement('option');
+    opt.value = p.id;
+    opt.textContent = `${p.username} (${p.cards})`;
+    ui.targetSelect.appendChild(opt);
   }
+  ui.rankSelect.innerHTML = '';
+  const ranksInHand = [...new Set((state.yourHand || []).map(rankOf))];
+  for (const r of ranksInHand) {
+    const opt = document.createElement('option');
+    opt.value = r;
+    opt.textContent = r;
+    ui.rankSelect.appendChild(opt);
+  }
+  ui.askBtn.disabled = !otherPlayers.length || !ranksInHand.length;
+}
 
-  function sendChatMessage() {
-    const text = els.chatInput.value.trim();
-    if (!text) return;
-    els.chatInput.value = "";
-    if (state.isHost) {
-      const user = state.username;
-      pushChat(user, text);
-      broadcast({ type: "chat", user, text });
+function renderControls() {
+  ui.startBtn.classList.toggle('hidden', !state.isHost);
+  ui.startBtn.disabled = !state.isHost || state.started || state.players.length < 2;
+  ui.createBtn.disabled = isConnected();
+  ui.joinBtn.disabled = isConnected();
+  ui.usernameInput.disabled = isConnected();
+  ui.roomInput.disabled = isConnected();
+}
+
+function render() {
+  renderLobby();
+  renderGameMeta();
+  renderHand();
+  renderAskPanel();
+  renderControls();
+  ui.roomOut.textContent = state.roomCode || '—';
+  if (!state.isHost && state.started && state.players.length < 2) {
+    ui.handHint.textContent = 'Waiting for host.';
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+
+function localPlayerRecord() {
+  if (state.isHost) {
+    return hostState.players.get(state.me.id);
+  }
+  return null;
+}
+
+function connectAsHost(peerId, username) {
+  state.isHost = true;
+  state.me.username = username;
+  state.hostId = peerId;
+  hostState.roomCode = peerId.replace(ROOM_PREFIX, '').toUpperCase();
+  hostState.started = false;
+  hostState.winner = null;
+  hostState.deck = [];
+  hostState.players.clear();
+  hostState.order = [];
+  hostState.logs = [];
+
+  state.me.id = peerId;
+  state.roomCode = hostState.roomCode;
+  setRoom(state.roomCode);
+  setPeerId(peerId);
+  setStatus('Creating room…');
+  addLog(`Creating room ${state.roomCode}…`);
+
+  state.peer = new Peer(peerId);
+
+  state.peer.on('open', (id) => {
+    setStatus(`Hosting room ${state.roomCode}`);
+    hostState.players.set(id, {
+      id,
+      username,
+      conn: null,
+      hand: [],
+      books: 0,
+      connected: true,
+    });
+    hostState.order = [id];
+    state.players = hostPublicPlayerList();
+    syncHostView();
+    render();
+    addLog(`You are hosting as ${username}. Share room code ${state.roomCode}.`, 'good');
+  });
+
+  state.peer.on('connection', (conn) => {
+    conn.on('data', (msg) => handleHostMessage(conn, msg));
+    conn.on('close', () => handleHostDisconnect(conn.peer));
+    conn.on('error', (err) => addLog(`Connection error: ${err.message || err}`, 'bad'));
+  });
+
+  state.peer.on('error', (err) => {
+    const msg = String(err?.type || err?.message || err);
+    if (msg.includes('unavailable-id')) {
+      addLog('Room code collision. Try creating again.', 'bad');
+      setStatus('Room code collision');
     } else {
-      const conn = state.connections.get(state.hostId);
-      safeSend(conn, { type: "chat", text });
-      pushChat(state.username, text);
+      addLog(`Peer error: ${msg}`, 'bad');
+      setStatus(`Error: ${msg}`);
     }
+  });
+}
+
+function handleHostDisconnect(peerId) {
+  const p = hostState.players.get(peerId);
+  if (!p) return;
+  p.connected = false;
+  addLog(`${p.username} left the room.`);
+  if (hostState.order.includes(peerId)) {
+    hostState.order = hostState.order.filter(id => id !== peerId);
+  }
+  hostState.players.delete(peerId);
+  if (hostState.started && hostState.order.length < 2) {
+    endGame();
+    return;
+  }
+  if (hostState.started && hostState.order[hostState.turnIndex] === peerId) {
+    hostState.turnIndex = 0;
+    maybeAutoDrawIfEmptyTurnPlayer();
+  }
+  hostSendLobby();
+  syncAllClients();
+}
+
+function ensureHostPlayer(conn, msg) {
+  const id = conn.peer;
+  const username = sanitizeName(msg.username || 'Player');
+  const existingNames = [...hostState.players.values()].map(p => p.username);
+  const finalName = ensureUniqueName(username, existingNames);
+
+  if (hostState.started) {
+    sendToConn(conn, { type: 'error', message: 'Game already started.' });
+    conn.close();
+    return null;
   }
 
-  function connectAsGuest() {
-    const code = normalizeCode(els.joinCode.value);
-    const name = normalizeName(els.joinName.value);
-    if (!code) return alert("Enter a room code.");
-    if (!name) return alert("Enter a username.");
-    state.joinedAt = Date.now();
-    initPeerForGuest(code, name);
-    showScreen("menu");
+  const rec = {
+    id,
+    username: finalName,
+    conn,
+    hand: [],
+    books: 0,
+    connected: true,
+  };
+  hostState.players.set(id, rec);
+  hostState.order = [...hostState.players.keys()];
+  addLog(`${finalName} joined the room.`, 'good');
+  sendToConn(conn, {
+    type: 'welcome',
+    roomCode: hostState.roomCode,
+    hostId: state.me.id,
+    yourId: id,
+    username: finalName,
+  });
+  hostSendLobby();
+  syncAllClients();
+  return rec;
+}
+
+function handleHostMessage(conn, msg) {
+  if (!msg || typeof msg !== 'object') return;
+  const type = msg.type;
+  if (type === 'join') {
+    ensureHostPlayer(conn, msg);
+    return;
+  }
+  const player = hostState.players.get(conn.peer);
+  if (!player) return;
+
+  if (type === 'ask') {
+    handleAskMove(player.id, msg.targetId, msg.rank);
+  } else if (type === 'chat') {
+    const text = String(msg.text || '').trim().slice(0, 200);
+    if (text) {
+      addLog(`${player.username}: ${text}`);
+      broadcast({ type: 'chat', from: player.username, text });
+    }
+  } else if (type === 'ready') {
+    // no-op for now
+  }
+}
+
+function drawFromDeck(player) {
+  if (!hostState.deck.length) return null;
+  const card = hostState.deck.pop();
+  player.hand.push(card);
+  player.hand.sort((a, b) => cardSortValue(a) - cardSortValue(b));
+  removeBooksFromPlayer(player);
+  return card;
+}
+
+function transferCards(fromPlayer, toPlayer, rank) {
+  const moving = fromPlayer.hand.filter(c => rankOf(c) === rank);
+  fromPlayer.hand = fromPlayer.hand.filter(c => rankOf(c) !== rank);
+  toPlayer.hand.push(...moving);
+  toPlayer.hand.sort((a, b) => cardSortValue(a) - cardSortValue(b));
+  fromPlayer.hand.sort((a, b) => cardSortValue(a) - cardSortValue(b));
+  return moving;
+}
+
+function handleAskMove(askerId, targetId, rank) {
+  if (!hostState.started) return;
+  if (hostState.order[hostState.turnIndex] !== askerId) return;
+
+  const asker = hostState.players.get(askerId);
+  const target = hostState.players.get(targetId);
+  rank = String(rank || '').trim();
+
+  if (!asker || !target) {
+    sendToClient(askerId, { type: 'error', message: 'Invalid player selection.' });
+    return;
+  }
+  if (askerId === targetId) {
+    sendToClient(askerId, { type: 'error', message: 'You cannot ask yourself.' });
+    return;
+  }
+  if (!RANKS.includes(rank)) {
+    sendToClient(askerId, { type: 'error', message: 'Invalid rank.' });
+    return;
+  }
+  if (!asker.hand.some(c => rankOf(c) === rank)) {
+    sendToClient(askerId, { type: 'error', message: `You must have at least one ${rank} to ask for it.` });
+    return;
   }
 
-  function startCreateFlow() {
-    const name = normalizeName(els.createName.value);
-    const code = randomCode();
-    els.previewRoomCode.textContent = code;
-    initPeerForHost(code, name);
-    showScreen("menu");
-  }
-
-  function joinRoom() {
-    const code = normalizeCode(els.joinCode.value);
-    const name = normalizeName(els.joinName.value);
-    if (!code) return alert("Enter a room code.");
-    if (!name) return alert("Enter a username.");
-    showScreen("menu");
-    initPeerForGuest(code, name);
-  }
-
-  function copyCode() {
-    if (!state.roomCode) return;
-    navigator.clipboard?.writeText(state.roomCode).then(() => {
-      setFooter("Room code copied.");
-    }).catch(() => {
-      setFooter(`Room code: ${state.roomCode}`);
+  const beforeCount = target.hand.filter(c => rankOf(c) === rank).length;
+  if (beforeCount > 0) {
+    const transferred = transferCards(target, asker, rank);
+    removeBooksFromPlayer(asker);
+    removeBooksFromPlayer(target);
+    const moveText = `${asker.username} asked ${target.username} for ${rank}s and got ${transferred.length}.`;
+    addLog(moveText, 'good');
+    hostState.logs.push(moveText);
+    broadcast({
+      type: 'move',
+      message: moveText,
+      detail: { asker: asker.username, target: target.username, rank, took: transferred.length },
     });
-  }
+    syncAllClients();
 
-  function backToMenu() {
-    teardownPeer();
-    showScreen("menu");
-  }
-
-  function leaveGame() {
-    teardownPeer();
-    showScreen("menu");
-  }
-
-  function askMove() {
-    if (!state.game || !isMyTurn()) return;
-    const targetId = els.targetSelect.value;
-    const rank = els.rankSelect.value;
-    if (!targetId || !rank) return;
-    if (state.isHost) {
-      handleAsk(state.localPeerId, { targetId, rank });
-      // after successful ask, if turn should advance and the asker did not draw matching card, handleAsk already advanced
-      // if asker received cards / matched draw, they keep turn
-      state.game.lastAction = `${displayName(state.localPeerId)} asked ${displayName(targetId)} for ${rank}s.`;
-      updateAskButton();
-      renderGame();
+    if (isGameOver()) {
+      endGame();
+      return;
+    }
+    // successful ask: same player keeps turn
+    maybeAutoDrawIfEmptyTurnPlayer();
+    syncAllClients();
+  } else {
+    const moveText = `${asker.username} asked ${target.username} for ${rank}s and had to go fish.`;
+    addLog(moveText);
+    hostState.logs.push(moveText);
+    broadcast({
+      type: 'move',
+      message: moveText,
+      detail: { asker: asker.username, target: target.username, rank, took: 0 },
+    });
+    const drawn = drawFromDeck(asker);
+    if (drawn) {
+      const drawRank = rankOf(drawn);
+      const fishText = `${asker.username} drew ${drawRank}.`;
+      addLog(fishText);
+      hostState.logs.push(fishText);
+      broadcast({ type: 'move', message: fishText, detail: { draw: drawn, asker: asker.username } });
+      removeBooksFromPlayer(asker);
+      if (drawRank === rank) {
+        addLog(`${asker.username} drew the rank they asked for and goes again.`, 'good');
+      } else {
+        advanceTurn(true);
+      }
     } else {
-      const conn = state.connections.get(state.hostId);
-      safeSend(conn, { type: "ask", targetId, rank });
+      addLog('Deck is empty.', 'bad');
+      advanceTurn(true);
+    }
+
+    if (isGameOver()) {
+      endGame();
+      return;
+    }
+
+    syncAllClients();
+  }
+
+  if (!isGameOver() && hostState.order[hostState.turnIndex] === askerId) {
+    // same turn continues after successful ask or matching draw
+    maybeAutoDrawIfEmptyTurnPlayer();
+  }
+  if (isGameOver()) {
+    endGame();
+    return;
+  }
+  syncAllClients();
+}
+
+function connectAsClient(roomCode, username) {
+  state.isHost = false;
+  state.roomCode = roomCode;
+  setRoom(roomCode);
+  setStatus('Connecting…');
+  addLog(`Connecting to ${roomCode}…`);
+  state.peer = new Peer();
+
+  state.peer.on('open', (id) => {
+    state.me.id = id;
+    setPeerId(id);
+    const hostId = hostPeerIdFromRoom(roomCode);
+    state.conn = state.peer.connect(hostId, { reliable: true });
+    state.conn.on('open', () => {
+      setStatus(`Connected to ${roomCode}`);
+      sendToConn(state.conn, { type: 'join', username });
+    });
+    state.conn.on('data', handleClientMessage);
+    state.conn.on('close', () => {
+      setStatus('Disconnected');
+      addLog('Disconnected from host.', 'bad');
+    });
+    state.conn.on('error', (err) => {
+      addLog(`Connection error: ${err.message || err}`, 'bad');
+      setStatus('Connection error');
+    });
+  });
+
+  state.peer.on('error', (err) => {
+    const msg = String(err?.type || err?.message || err);
+    addLog(`Peer error: ${msg}`, 'bad');
+    setStatus(`Error: ${msg}`);
+  });
+}
+
+function handleClientMessage(msg) {
+  if (!msg || typeof msg !== 'object') return;
+  if (msg.type === 'welcome') {
+    state.me.username = msg.username || state.me.username;
+    state.hostId = msg.hostId;
+    state.roomCode = msg.roomCode || state.roomCode;
+    setRoom(state.roomCode);
+    addLog(`Joined as ${state.me.username}.`, 'good');
+  } else if (msg.type === 'lobby') {
+    state.hostId = msg.hostId;
+    state.started = !!msg.started;
+    state.players = msg.players || [];
+    render();
+  } else if (msg.type === 'state') {
+    state.started = !!msg.started;
+    state.hostId = msg.hostId;
+    state.players = msg.players || [];
+    state.turnId = msg.turnId || null;
+    state.deckCount = msg.deckCount || 0;
+    state.yourHand = msg.yourHand || [];
+    state.yourBooks = msg.yourBooks || 0;
+    if (Array.isArray(msg.logs)) {
+      // show only the newest logs; avoid spam
+      const latest = msg.logs[msg.logs.length - 1];
+      if (latest) addLog(latest);
+    }
+    render();
+    if (msg.winner) {
+      addLog(`Winner: ${msg.winner}`, 'good');
+    }
+  } else if (msg.type === 'chat') {
+    addLog(`${msg.from}: ${msg.text}`);
+  } else if (msg.type === 'move') {
+    addLog(msg.message, msg.detail?.took > 0 ? 'good' : '');
+  } else if (msg.type === 'game_over') {
+    const scores = (msg.scores || []).map(s => `${s.username} (${s.books})`).join(' · ');
+    addLog(`Game over. Winner: ${msg.winner}. Scores: ${scores}`, 'good');
+    state.started = false;
+    render();
+  } else if (msg.type === 'error') {
+    addLog(msg.message || 'Unknown error', 'bad');
+  }
+}
+
+function createRoom() {
+  const username = sanitizeName(ui.usernameInput.value);
+  const room = makeRoomCode();
+  state.me.username = username;
+  connectAsHost(hostPeerIdFromRoom(room), username);
+  ui.roomInput.value = room;
+}
+
+function joinRoom() {
+  const username = sanitizeName(ui.usernameInput.value);
+  const room = sanitizeName(ui.roomInput.value).replace(/[^A-Z0-9]/gi, '').toUpperCase();
+  if (!room) {
+    addLog('Enter a room code.', 'bad');
+    return;
+  }
+  state.me.username = username;
+  connectAsClient(room, username);
+}
+
+function copyRoom() {
+  if (!state.roomCode) return;
+  navigator.clipboard?.writeText(state.roomCode).then(() => {
+    addLog(`Room code copied: ${state.roomCode}`, 'good');
+  }).catch(() => addLog(`Room code: ${state.roomCode}`));
+}
+
+function askMove() {
+  if (!state.started || state.turnId !== state.me.id) return;
+  const targetId = ui.targetSelect.value;
+  const rank = ui.rankSelect.value;
+  if (!targetId || !rank) return;
+  if (state.isHost) {
+    handleAskMove(state.me.id, targetId, rank);
+  } else {
+    sendToConn(state.conn, { type: 'ask', targetId, rank });
+  }
+}
+
+ui.createBtn.addEventListener('click', createRoom);
+ui.joinBtn.addEventListener('click', joinRoom);
+ui.startBtn.addEventListener('click', startGame);
+ui.askBtn.addEventListener('click', askMove);
+ui.copyRoomBtn.addEventListener('click', copyRoom);
+
+ui.usernameInput.value = 'Player';
+ui.roomInput.value = '';
+setStatus('Idle');
+render();
+
+// allow Enter key to connect
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    if (!isConnected()) {
+      if (document.activeElement === ui.roomInput) joinRoom();
+      else if (document.activeElement === ui.usernameInput && ui.roomInput.value.trim()) joinRoom();
+    } else if (state.started && state.turnId === state.me.id) {
+      askMove();
     }
   }
-
-  function initialScreenTimer() {
-    setTimeout(() => {
-      if (state.screen === "splash") showScreen("menu");
-    }, 900);
-  }
-
-  function bindUI() {
-    els.enterAppBtn.addEventListener("click", () => showScreen("menu"));
-    els.menuCreateBtn.addEventListener("click", () => showScreen("create"));
-    els.menuJoinBtn.addEventListener("click", () => showScreen("join"));
-    els.createRoomBtn.addEventListener("click", () => {
-      const name = normalizeName(els.createName.value);
-      if (!name) return alert("Enter a username.");
-      const code = randomCode();
-      els.previewRoomCode.textContent = code;
-      initPeerForHost(code, name);
-      showScreen("lobby");
-    });
-    els.joinRoomBtn.addEventListener("click", () => {
-      const code = normalizeCode(els.joinCode.value);
-      const name = normalizeName(els.joinName.value);
-      if (!code) return alert("Enter a room code.");
-      if (!name) return alert("Enter a username.");
-      initPeerForGuest(code, name);
-    });
-    els.copyCodeBtn.addEventListener("click", copyCode);
-    els.chatSendBtn.addEventListener("click", sendChatMessage);
-    els.chatInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") sendChatMessage();
-    });
-    els.startGameBtn.addEventListener("click", () => {
-      if (state.isHost) startGame();
-      else safeSend(state.connections.get(state.hostId), { type: "start-request" });
-    });
-    els.leaveLobbyBtn.addEventListener("click", leaveGame);
-    els.backToLobbyBtn.addEventListener("click", () => showScreen("lobby"));
-    els.leaveGameBtn.addEventListener("click", leaveGame);
-    els.askBtn.addEventListener("click", askMove);
-    els.playAgainBtn.addEventListener("click", () => {
-      teardownPeer();
-      showScreen("menu");
-    });
-
-    $$(".link-btn[data-back]").forEach(btn => {
-      btn.addEventListener("click", () => showScreen(btn.dataset.back));
-    });
-
-    els.handCards.addEventListener("click", (e) => {
-      const btn = e.target.closest("[data-card-id]");
-      if (!btn) return;
-      state.selectedCardId = btn.dataset.cardId;
-      renderGame();
-    });
-
-    window.addEventListener("beforeunload", () => {
-      try { teardownPeer(false); } catch {}
-    });
-  }
-
-  function boot() {
-    bindUI();
-    showScreen("splash");
-    initialScreenTimer();
-    setStatus("Offline");
-    setFooter("Ready.");
-    els.previewRoomCode.textContent = randomCode();
-    els.createName.value = "Blake";
-    els.joinName.value = "Blake";
-    els.joinCode.value = "";
-    renderChat();
-    updateAskButton();
-    notify("Welcome to Go Fish.");
-  }
-
-  boot();
-})();
+});
